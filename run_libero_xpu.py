@@ -159,6 +159,11 @@ class Args:
     resize_size: int = 224
     replan_steps: int = 5
 
+    # Denoising steps for the flow-matching sampler.
+    # Default (None) uses the model config value (10 for π0.5).
+    # BLURR paper shows 4 steps ≈ same success rate at ~57% lower latency.
+    num_steps: int | None = None
+
     #################################################################################################################
     # LIBERO environment-specific parameters
     #################################################################################################################
@@ -208,8 +213,12 @@ def eval_libero(args: Args) -> None:
     print(f"Loading model: config={args.config_name}, device={args.device}")
     print(f"Checkpoint: {checkpoint_dir}")
     config = _config.get_config(args.config_name)
+    sample_kwargs = {"num_steps": args.num_steps} if args.num_steps is not None else None
+    if sample_kwargs:
+        print(f"Denoising steps: {args.num_steps}  (default is 10)")
     policy = _policy_config.create_trained_policy(
-        config, checkpoint_dir, pytorch_device=args.device
+        config, checkpoint_dir, pytorch_device=args.device,
+        sample_kwargs=sample_kwargs,
     )
     print("Model loaded.")
 
@@ -496,6 +505,7 @@ def _eval_single_suite(args: Args, policy) -> float:
     print(f"  Suite              : {suite_label}")
     print(f"  Device             : {args.device}")
     print(f"  Checkpoint         : {args.checkpoint_dir}")
+    print(f"  Denoise steps      : {args.num_steps if args.num_steps is not None else 10} (default=10)")
     print(f"  Trials/Task        : {args.num_trials_per_task}")
     print(f"  Total Episodes     : {total_episodes}")
     print(f"  Success Rate       : {success_rate:.1f}%")
