@@ -38,6 +38,7 @@ import numpy as np
 import tqdm
 import tyro
 
+from web_viewer import WebViewer
 from openpi.training import config as _config
 from openpi.policies import policy_config as _policy_config
 from openpi_client import image_tools
@@ -151,7 +152,7 @@ class Args:
     #################################################################################################################
     config_name: str = "pi05_libero"
     checkpoint_dir: str = "~/.cache/openpi/openpi-assets/checkpoints/pi05_libero_pytorch"
-    device: str = "xpu:0"  # "xpu:0", "cpu"
+    device: str = "xpu"  # "xpu", "cpu"
 
     #################################################################################################################
     # Model server parameters (kept from main.py for compatibility)
@@ -178,6 +179,10 @@ class Args:
     #################################################################################################################
     video_out_path: str = "data/libero/videos"  # Path to save videos
     seed: int = 7  # Random Seed (for reproducibility)
+
+    # Web viewer: stream live simulation frames to http://localhost:<web_viewer_port>
+    # Set to 0 to disable.
+    web_viewer_port: int = 8765
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────
@@ -222,6 +227,12 @@ def eval_libero(args: Args) -> None:
     )
     print("Model loaded.")
 
+    # Start web viewer
+    viewer: WebViewer | None = None
+    if args.web_viewer_port > 0:
+        viewer = WebViewer(port=args.web_viewer_port)
+        viewer.start()
+
     # Warmup
     print("Warming up (3 iterations)...")
     from openpi.policies import libero_policy
@@ -235,8 +246,11 @@ def eval_libero(args: Args) -> None:
 
     for suite_name in suites:
         suite_args = dataclasses.replace(args, task_suite_name=suite_name)
-        sr = _eval_single_suite(suite_args, policy)
+        sr = _eval_single_suite(suite_args, policy, viewer=viewer)
         suite_summaries.append((suite_name, sr))
+
+    if viewer:
+        viewer.stop()
 
     if len(suite_summaries) > 1:
         avg_sr = sum(sr for _, sr in suite_summaries) / len(suite_summaries)
@@ -270,7 +284,7 @@ def eval_libero(args: Args) -> None:
         print(f"\nCombined results saved to {combined_path}")
 
 
-def _eval_single_suite(args: Args, policy) -> float:
+def _eval_single_suite(args: Args, policy, viewer: "WebViewer | None" = None) -> float:
     """Evaluate a single task suite. Returns success rate percentage (0-100)."""
     # Set random seed
     np.random.seed(args.seed)
@@ -363,6 +377,17 @@ def _eval_single_suite(args: Args, policy) -> float:
                     # Save preprocessed image for replay video
                     replay_images.append(img)
 
+                    # Stream to web viewer
+                    if viewer is not None:
+                        viewer.push_frame(img)
+                        viewer.push_wrist(wrist_img)
+                        viewer.update_stats(
+                            task=str(task_description),
+                            episode=task_episodes + 1,
+                            successes=task_successes,
+                            total=task_episodes + 1,
+                        )
+
                     if not action_plan:
                         # Compute new action chunk — direct model inference (no server)
                         element = {
@@ -388,6 +413,10 @@ def _eval_single_suite(args: Args, policy) -> float:
                         episode_inf_time += inf_dt
                         ep_step_times.append(inf_dt)
                         all_step_times.append(inf_dt)
+
+                        # Update web viewer inference FPS (based on true model latency)
+                        if viewer is not None and inf_dt > 0:
+                            viewer._update_fps(inf_dt)
 
                         assert (
                             len(action_chunk) >= args.replan_steps
