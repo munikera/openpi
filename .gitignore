@@ -1,5 +1,7 @@
 BLURR-A-Boosted-Low-Resource-Inference-for-Vision-Language-Action-Model
 
+profiler_output
+
 # Data directories.
 assets/
 checkpoints/
