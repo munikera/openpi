@@ -22,50 +22,6 @@
 from typing import Callable, Optional, Union
 
 import torch
-# ── custom SYCL RMSNorm kernel (built by scripts/build_rms_norm.py) ──────────
-try:
-    import importlib as _importlib, os as _os, sys as _sys
-    _this = _os.path.abspath(__file__)
-    for _ in range(8):
-        _candidate = _os.path.join(_os.path.dirname(_this), 'build', 'rms_norm_xpu')
-        if _os.path.isdir(_candidate):
-            break
-        _this = _os.path.dirname(_this)
-    if _candidate not in _sys.path:
-        _sys.path.insert(0, _candidate)
-    _rms_ext = _importlib.import_module('rms_norm_xpu_ext')
-
-    # Register as proper custom ops so torch.compile can trace through them
-    # using fake-tensor abstract implementations (shape inference only).
-    _lib = torch.library.Library("sycl_rms", "DEF")
-    _lib.define("rms_norm(Tensor x, Tensor w, float eps) -> Tensor")
-    _lib.define("ada_rms_norm(Tensor x, Tensor mod, float eps) -> (Tensor, Tensor)")
-
-    @torch.library.impl(_lib, "rms_norm", "XPU")
-    def _rms_norm_xpu_impl(x, w, eps):
-        return _rms_ext.rms_norm_xpu(x, w, eps)
-
-    @torch.library.register_fake("sycl_rms::rms_norm")
-    def _rms_norm_abstract(x, w, eps):
-        # output has the same shape and dtype as input x
-        return x.new_empty(x.shape)
-
-    @torch.library.impl(_lib, "ada_rms_norm", "XPU")
-    def _ada_rms_norm_xpu_impl(x, mod, eps):
-        return _rms_ext.ada_rms_norm_xpu(x, mod, eps)
-
-    @torch.library.register_fake("sycl_rms::ada_rms_norm")
-    def _ada_rms_norm_abstract(x, mod, eps):
-        # out and gate both have the same shape as x: [B, S, H]
-        out = x.new_empty(x.shape)
-        gate = x.new_empty(x.shape)
-        return out, gate
-
-    _SYCL_RMS = True
-except Exception:
-    _rms_ext = None
-    _SYCL_RMS = False
-# ─────────────────────────────────────────────────────────────────────────────
 from torch import nn
 
 from ...activations import ACT2FN
@@ -115,54 +71,34 @@ class GemmaRMSNorm(nn.Module):
         return normed_inputs
 
     def forward(self, x, cond=None):
-        dtype = x.dtype
-
-        # ── fast path: fused SYCL kernel (XPU only, regular RMSNorm) ─────────
-        if (_SYCL_RMS and x.device.type == "xpu"
-                and (cond is None or self.dense is None)):
-            w_fp32 = self.weight.float()
-            out = torch.ops.sycl_rms.rms_norm(
-                x.view(-1, x.size(-1)), w_fp32, self.eps
-            ).view_as(x)
-            return out, None
-
-        # ── fast path: fused SYCL kernel (XPU only, AdaRMSNorm) ──────────────
-        if (_SYCL_RMS and x.device.type == "xpu"
-                and cond is not None and self.dense is not None):
-            mod = self.dense(cond)
-            if mod.dtype != torch.bfloat16:
-                mod = mod.to(torch.bfloat16)
-            out, gate = torch.ops.sycl_rms.ada_rms_norm(x, mod, self.eps)
-            return out, gate
-
-        # ── original path (CUDA / fallback) ──────────────────────────────────
+        dtype = x.dtype  # original dtype, could be half-precision
         normed_inputs = self._norm(x)
-
+        
         if cond is None or self.dense is None:
             # regular RMSNorm
             # scale by learned parameter in float32 (matches source implementation)
             normed_inputs = normed_inputs * (1.0 + self.weight.float())
             return normed_inputs.to(dtype), None  # return in original dtype with None gate
-
+        
         # adaptive RMSNorm (if cond is provided and dense layer exists)
         if cond.shape[-1] != self.cond_dim:
             raise ValueError(f"Expected cond dimension {self.cond_dim}, got {cond.shape[-1]}")
-
+        
         #self.dense.to(dtype=torch.bfloat16).to(dtype=torch.float32)
         modulation = self.dense(cond)
         # Reshape modulation to broadcast properly: [batch, 1, features] for [batch, seq, features]
         if len(x.shape) == 3:  # [batch, seq, features]
             modulation = modulation.unsqueeze(1)
-
+        
         scale, shift, gate = torch.chunk(modulation, 3, dim=-1)
-
+        
         # Apply adaptive normalization: use model weight dtype to ensure compatibility
         # model_dtype = self.dense.weight.dtype  # Use the model's dtype (bfloat16)
         # scale = scale.to(model_dtype)
         # shift = shift.to(model_dtype)
         # gate = gate.to(model_dtype)
         # normed_inputs = normed_inputs.to(model_dtype)  # Convert normed_inputs to model dtype
-
+        
         normed_inputs = normed_inputs * (1 + scale.to(torch.float32)) + shift.to(torch.float32)
 
         return normed_inputs.to(dtype), gate.to(dtype)
