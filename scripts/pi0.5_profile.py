@@ -34,6 +34,32 @@ Output per run
 
 Attention impl currently active is printed at startup so you know which
 branch you are profiling without reading source code.
+
+unitrace mode (Intel Level Zero kernel-level profiling)
+-------------------------------------------------------
+Run under unitrace with --unitrace flag. This mode:
+  - Skips torch.profiler (no double-profiling overhead)
+  - Pauses collection during warmup via PTI_ENABLE_COLLECTION=0
+  - Wraps timed iterations with torch.autograd.profiler.emit_itt() so
+    unitrace sees PyTorch op names in the timeline alongside GPU kernels
+  - Resumes collection (PTI_ENABLE_COLLECTION=1) only for the timed region
+
+  # Device timing summary (kernel name + duration + submit/execute ratio):
+    unitrace -d -v \\
+        python scripts/pi0.5_profile.py --task libero --tag baseline --unitrace --no-profiler
+
+  # Full Chrome trace (open in https://ui.perfetto.dev):
+    unitrace --chrome-kernel-logging --chrome-dnn-logging \\
+        python scripts/pi0.5_profile.py --task libero --tag baseline --unitrace --no-profiler
+
+  # Add --start-paused if unitrace version supports it (avoids load-time noise):
+    unitrace --start-paused --chrome-kernel-logging --chrome-dnn-logging \\
+        python scripts/pi0.5_profile.py --task libero --tag baseline --unitrace --no-profiler
+
+  # Limit to fewer iters for shorter trace files (still correct steady-state stats):
+    unitrace -d -v \\
+        python scripts/pi0.5_profile.py --task libero --tag baseline \\
+            --unitrace --no-profiler --num-iters 5 --num-warmup 10
 """
 
 import argparse
@@ -152,9 +178,15 @@ def detect_attn_impl(model: PI0Pytorch) -> dict:
 
 def run_one_timed(model: PI0Pytorch, device: torch.device, obs, num_steps: int) -> dict:
     """
-    Mirrors sample_actions() exactly but wraps each phase in:
-      - torch.profiler.record_function  (shows up as named region in trace)
-      - wall-clock timer with XPU sync  (accurate per-phase ms)
+    Measure per-stage wall-clock by calling model.sample_actions() — the same
+    compiled path used by policy.infer() — but with a single XPU sync at the
+    END of each stage boundary.
+
+    IMPORTANT: The total here will be HIGHER than policy.infer() wall-clock
+    because each _sync() breaks the XPU async pipeline. Use this only to see
+    the *relative* split between stages, not absolute latency.
+    For absolute latency use run_timing() → print_timing().
+    For kernel-level device time use unitrace or torch.profiler.
     """
     timings = {}
     with torch.no_grad():
@@ -163,32 +195,31 @@ def run_one_timed(model: PI0Pytorch, device: torch.device, obs, num_steps: int) 
             (bsize, model.config.action_horizon, model.config.action_dim), device
         )
 
-        # ── Phase 1: preprocess ──────────────────────────────────────────────
-        with torch.profiler.record_function("1_preprocess"):
+        # ── Stage 0: preprocess ──────────────────────────────────────────────
+        with torch.profiler.record_function("stage0_preprocess"):
             t0 = time.perf_counter()
             images, img_masks, lang_tokens, lang_masks, state = \
                 model._preprocess_observation(obs, train=False)
             _sync(device)
-        timings["preprocess_ms"] = (time.perf_counter() - t0) * 1000
+            timings["preprocess_ms"] = (time.perf_counter() - t0) * 1000
 
-        # ── Phase 2: embed_prefix (SigLIP × 3 + lang embed) ─────────────────
-        with torch.profiler.record_function("2_embed_prefix_siglip"):
+        # ── Stage 1: embed prefix (SigLIP × cameras + lang embed) ────────────
+        with torch.profiler.record_function("stage1_embed_prefix"):
             t0 = time.perf_counter()
             prefix_embs, prefix_pad_masks, prefix_att_masks = model.embed_prefix(
                 images, img_masks, lang_tokens, lang_masks
             )
             _sync(device)
-        timings["embed_prefix_ms"] = (time.perf_counter() - t0) * 1000
+            timings["embed_prefix_ms"] = (time.perf_counter() - t0) * 1000
 
-        # Build prefix masks (CPU-only, no sync needed)
+        # Build prefix masks (CPU-only)
         prefix_att_2d = make_att_2d_masks(prefix_pad_masks, prefix_att_masks)
         prefix_att_4d = model._prepare_attention_masks_4d(prefix_att_2d)
         prefix_pos    = torch.cumsum(prefix_pad_masks, dim=1) - 1
 
-        # ── Phase 3: PaliGemma prefix forward (KV-cache fill) ───────────────
-        with torch.profiler.record_function("3_paligemma_prefix_fwd"):
+        # ── Stage 2: prefix forward (KV-cache fill, runs once) ───────────────
+        with torch.profiler.record_function("stage2_prefix_fwd"):
             t0 = time.perf_counter()
-            # Match sample_actions(): override attn impl to eager before prefix fwd
             model.paligemma_with_expert.paligemma.language_model.config._attn_implementation = "eager"  # noqa: SLF001
             _, past_kv = model.paligemma_with_expert.forward(
                 attention_mask=prefix_att_4d,
@@ -198,28 +229,30 @@ def run_one_timed(model: PI0Pytorch, device: torch.device, obs, num_steps: int) 
                 use_cache=True,
             )
             _sync(device)
-        timings["prefix_fwd_ms"] = (time.perf_counter() - t0) * 1000
+            timings["prefix_fwd_ms"] = (time.perf_counter() - t0) * 1000
 
-        # ── Phase 4: denoising loop ──────────────────────────────────────────
+        # ── Stage 3: denoising loop ──────────────────────────────────────────
         dt        = torch.tensor(-1.0 / num_steps, dtype=torch.float32, device=device)
         x_t       = noise
         ts        = torch.tensor(1.0, dtype=torch.float32, device=device)
-        denoise_t = 0.0
+        t_embed_suffix_total = 0.0
+        t_expert_fwd_total   = 0.0
         step_idx  = 0
 
         while ts >= -dt / 2:
             expanded_ts = ts.expand(bsize)
 
-            with torch.profiler.record_function(f"4_denoise_step_{step_idx}"):
-                # embed_suffix
-                with torch.profiler.record_function("4a_embed_suffix"):
+            with torch.profiler.record_function(f"stage3_step{step_idx}"):
+
+                # 3a: embed suffix
+                with torch.profiler.record_function("stage3a_embed_suffix"):
                     t0 = time.perf_counter()
                     suffix_embs, suffix_pad_masks, suffix_att_masks, adarms_cond = \
                         model.embed_suffix(state, x_t, expanded_ts)
                     _sync(device)
-                t_emb_suf = (time.perf_counter() - t0) * 1000
+                    t_embed_suffix_total += (time.perf_counter() - t0) * 1000
 
-                # build denoise masks
+                # build denoise masks (CPU)
                 suffix_len    = suffix_pad_masks.shape[1]
                 prefix_pad_2d = prefix_pad_masks[:, None, :].expand(
                     bsize, suffix_len, prefix_pad_masks.shape[1])
@@ -229,10 +262,9 @@ def run_one_timed(model: PI0Pytorch, device: torch.device, obs, num_steps: int) 
                 prefix_off    = torch.sum(prefix_pad_masks, dim=-1)[:, None]
                 pos_ids       = prefix_off + torch.cumsum(suffix_pad_masks, dim=1) - 1
 
-                # action expert forward
-                with torch.profiler.record_function("4b_action_expert_fwd"):
+                # 3b: action expert forward
+                with torch.profiler.record_function("stage3b_expert_fwd"):
                     t0 = time.perf_counter()
-                    # Match denoise_step(): override attn impl to eager before expert fwd
                     model.paligemma_with_expert.gemma_expert.model.config._attn_implementation = "eager"  # noqa: SLF001
                     out_embs, _ = model.paligemma_with_expert.forward(
                         attention_mask=full_att_4d,
@@ -246,18 +278,20 @@ def run_one_timed(model: PI0Pytorch, device: torch.device, obs, num_steps: int) 
                     suffix_out = suffix_out.to(torch.float32)
                     v_t = model.action_out_proj(suffix_out)
                     _sync(device)
-                t_ae = (time.perf_counter() - t0) * 1000
+                    t_expert_fwd_total += (time.perf_counter() - t0) * 1000
 
-            denoise_t += t_emb_suf + t_ae
             x_t  = x_t + dt * v_t
             ts   = ts + dt
             step_idx += 1
 
-    timings["denoise_total_ms"]    = denoise_t
-    timings["denoise_per_step_ms"] = denoise_t / num_steps
+    timings["embed_suffix_ms"]    = t_embed_suffix_total
+    timings["expert_fwd_ms"]      = t_expert_fwd_total
+    timings["denoise_total_ms"]   = t_embed_suffix_total + t_expert_fwd_total
+    timings["denoise_per_step_ms"]= timings["denoise_total_ms"] / num_steps
     timings["total_ms"] = (timings["preprocess_ms"] + timings["embed_prefix_ms"]
                            + timings["prefix_fwd_ms"] + timings["denoise_total_ms"])
     return timings
+
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -269,19 +303,86 @@ def run_timing(policy, raw_obs: dict, args) -> np.ndarray:
 
     Includes CPU preprocessing (transforms + tokenize + to(device)) + XPU compute,
     so the result matches benchmark_droid latency directly.
+
+    In --unitrace mode:
+    - Warmup runs with PTI_ENABLE_COLLECTION=0 (kernels invisible to unitrace)
+    - Timed runs with PTI_ENABLE_COLLECTION=1 and emit_itt() so unitrace sees
+      PyTorch op names alongside Level Zero kernel timings in the trace.
     """
+    unitrace_mode = getattr(args, "unitrace", False)
+
+    # ── Warmup: pause unitrace collection so JIT / cache misses don't pollute the trace ──
+    if unitrace_mode:
+        os.environ["PTI_ENABLE_COLLECTION"] = "0"
     print(f"    warmup {args.num_warmup} iters...", flush=True)
     for _ in range(args.num_warmup):
         policy.infer(raw_obs)
 
+    # ── Timed region: resume collection ──────────────────────────────────────
+    if unitrace_mode:
+        os.environ["PTI_ENABLE_COLLECTION"] = "1"
+        print("    PTI_ENABLE_COLLECTION=1 → unitrace now collecting", flush=True)
+
     print(f"    timing {args.num_iters} iters...", flush=True)
     wall_times = []
-    for _ in range(args.num_iters):
-        t0 = time.perf_counter()
-        policy.infer(raw_obs)
-        wall_times.append((time.perf_counter() - t0) * 1000)
+
+    def _timed_loop():
+        for _ in range(args.num_iters):
+            t0 = time.perf_counter()
+            policy.infer(raw_obs)
+            wall_times.append((time.perf_counter() - t0) * 1000)
+
+    if unitrace_mode:
+        # emit_itt() annotates PyTorch ops with ITT markers — unitrace picks them up
+        # and correlates them with the Level Zero kernel timeline.
+        try:
+            with torch.autograd.profiler.emit_itt():
+                _timed_loop()
+        except Exception:
+            # emit_itt not available (CUDA-only build) — run without it
+            print("    WARNING: emit_itt() unavailable — op names won't appear in unitrace timeline")
+            _timed_loop()
+    else:
+        _timed_loop()
+
+    if unitrace_mode:
+        os.environ["PTI_ENABLE_COLLECTION"] = "0"
+        print("    PTI_ENABLE_COLLECTION=0 → unitrace collection paused", flush=True)
 
     return np.array(wall_times)
+
+
+def print_stage_timings(timings: dict, num_steps: int):
+    """Print per-stage wall-clock breakdown matching the inference stage document.
+
+    NOTE: These numbers are LARGER than policy.infer() wall-clock because each
+    stage is XPU-synced individually, breaking the async pipeline. Use them only
+    for relative stage proportions, not absolute latency.
+    """
+    total = timings["total_ms"]
+
+    def row(label, ms):
+        pct = 100 * ms / total if total > 0 else 0
+        print(f"  │  {label:<44} {ms:7.1f} ms  ({pct:4.1f}%)")
+
+    print(f"\n  ┌─ Per-stage relative breakdown (synced, eager — not compile latency) ──")
+    print(f"  │  NOTE: total > policy.infer() because per-stage _sync() breaks pipeline")
+    print(f"  │  {'─'*66}")
+    row("Stage 0  CPU preprocess",         timings["preprocess_ms"])
+    row("Stage 1  Embed prefix (SigLIP×3 + lang)", timings["embed_prefix_ms"])
+    row("Stage 2  Prefix fwd / KV-fill (×1)",      timings["prefix_fwd_ms"])
+    t_denoise = timings["denoise_total_ms"]
+    t_suf     = timings.get("embed_suffix_ms", 0)
+    t_exp     = timings.get("expert_fwd_ms", 0)
+    t_per     = timings["denoise_per_step_ms"]
+    row(f"Stage 3  Denoise loop ×{num_steps} steps total",  t_denoise)
+    if t_suf or t_exp:
+        row(f"  3a  embed_suffix  ×{num_steps} total",      t_suf)
+        row(f"  3b  expert_fwd    ×{num_steps} total",      t_exp)
+        row(f"  avg per step (3a+3b)",                       t_per)
+    print(f"  │  {'─'*66}")
+    row("TOTAL (synced eager)",             total)
+    print(f"  └──────────────────────────────────────────────────────────")
 
 
 def print_timing(arr: np.ndarray, num_steps: int, out_file=None):
@@ -334,11 +435,17 @@ def run_profiler(model, device, obs, args, out_dir: Path):
         acc_events=True,
         on_trace_ready=torch.profiler.tensorboard_trace_handler(str(out_dir)),
     ) as prof:
-        for _ in range(args.num_profile):
+        all_timings = []
+        for i in range(args.num_profile):
             with torch.profiler.record_function("sample_actions"):
-                run_one_timed(model, device, obs, args.num_steps)
+                t = run_one_timed(model, device, obs, args.num_steps)
+                all_timings.append(t)
             _sync(device)
             prof.step()
+
+    # Print per-stage breakdown from the last profiler iteration
+    print(f"\n  Stage breakdown (last profiler iter, XPU-synced per stage):")
+    print_stage_timings(all_timings[-1], args.num_steps)
 
     # NOTE: on_trace_ready already saved the trace as a .pt.trace.json file.
     # export_chrome_trace() would fail here ("Trace is already saved").
@@ -395,6 +502,10 @@ def main(args):
         print("WARNING: no XPU/CUDA found, falling back to CPU")
     print(f"\n  Task   : {args.task}")
     print(f"  Device : {device}{' (auto-detected)' if args.device == 'auto' else ''}")
+    if args.unitrace:
+        print(f"  Mode   : unitrace  (PTI_ENABLE_COLLECTION pause/resume + emit_itt)")
+        # Start with collection OFF — will be enabled just before the timed region
+        os.environ["PTI_ENABLE_COLLECTION"] = "0"
 
     # ── Load policy (same as benchmark_droid.py) ──────────────────────────────
     # This gives us policy.infer() for accurate end-to-end timing,
@@ -421,8 +532,8 @@ def main(args):
 
     # ── Observations ──────────────────────────────────────────────────────────
     print("[2] Building observations...")
-    raw_obs  = make_raw_obs(args.task)           # numpy dict  — for policy.infer() timing
-    tensor_obs = make_tensor_obs(args.task, config_name, device)  # pre-built tensors — for profiler trace
+    raw_obs    = make_raw_obs(args.task)
+    tensor_obs = make_tensor_obs(args.task, config_name, device)
     print("    ✓ Ready")
 
     out_dir = Path(args.out_dir) / args.tag
@@ -435,12 +546,22 @@ def main(args):
         out_dir.mkdir(parents=True, exist_ok=True)
     print_timing(arr, args.num_steps, out_file=timing_path)
 
+    # ── Stage breakdown (quick, no profiler overhead) ─────────────────────────
+    if args.stages_only or not args.no_profiler:
+        print(f"\n[3b] Per-stage breakdown (1 synced iteration)...")
+        # warmup already done in run_timing; run one more to get clean timings
+        t = run_one_timed(model, device, tensor_obs, args.num_steps)
+        print_stage_timings(t, args.num_steps)
+
     # ── torch.profiler ────────────────────────────────────────────────────────
-    if not args.no_profiler:
+    if not args.no_profiler and not args.stages_only:
         print(f"\n[4] torch.profiler capture  (tag={args.tag})  → {out_dir}/")
         run_profiler(model, device, tensor_obs, args, out_dir)
+    elif args.stages_only:
+        print("\n[4] Profiler skipped (--stages-only mode)")
     else:
         print("\n[4] Profiler skipped (--no-profiler)")
+
 
 
 if __name__ == "__main__":
@@ -468,5 +589,14 @@ if __name__ == "__main__":
         help="Iterations inside torch.profiler (keep ≤5 to avoid huge traces)")
     parser.add_argument("--no-profiler", action="store_true",
         help="Skip torch.profiler, only run timing benchmark")
+    parser.add_argument("--stages-only", action="store_true",
+        help="Run one synced iteration and print per-stage wall-clock breakdown "
+             "(stages 0-3b as in docs/pi05_droid_inference_stages.md). "
+             "Skips torch.profiler. Combine with --unitrace for kernel-level detail.")
+    parser.add_argument("--unitrace", action="store_true",
+        help="unitrace mode: pause/resume PTI_ENABLE_COLLECTION around warmup/timing, "
+             "and wrap timed iterations with emit_itt() for op-name correlation. "
+             "Use with --no-profiler to avoid double-profiling. "
+             "Must be launched under the unitrace binary (see docstring for commands).")
     args = parser.parse_args()
     main(args)
