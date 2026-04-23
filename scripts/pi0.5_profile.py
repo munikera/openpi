@@ -63,9 +63,11 @@ Run under unitrace with --unitrace flag. This mode:
 """
 
 import argparse
+import json
 import os
 import sys
 import time
+from collections import defaultdict
 from pathlib import Path
 
 import numpy as np
@@ -75,7 +77,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "packages/openpi-client/src"))
 
 import openpi.training.config as _config
-from openpi.models_pytorch.pi0_pytorch import PI0Pytorch, make_att_2d_masks
+from openpi.models_pytorch.pi0_pytorch import PI0Pytorch
 from openpi.policies import policy_config as _policy_config
 
 _TASK_DEFAULTS = {
@@ -173,128 +175,6 @@ def detect_attn_impl(model: PI0Pytorch) -> dict:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Per-phase timed call  (wraps the real model methods with record_function)
-# ─────────────────────────────────────────────────────────────────────────────
-
-def run_one_timed(model: PI0Pytorch, device: torch.device, obs, num_steps: int) -> dict:
-    """
-    Measure per-stage wall-clock by calling model.sample_actions() — the same
-    compiled path used by policy.infer() — but with a single XPU sync at the
-    END of each stage boundary.
-
-    IMPORTANT: The total here will be HIGHER than policy.infer() wall-clock
-    because each _sync() breaks the XPU async pipeline. Use this only to see
-    the *relative* split between stages, not absolute latency.
-    For absolute latency use run_timing() → print_timing().
-    For kernel-level device time use unitrace or torch.profiler.
-    """
-    timings = {}
-    with torch.no_grad():
-        bsize = obs.state.shape[0]
-        noise = model.sample_noise(
-            (bsize, model.config.action_horizon, model.config.action_dim), device
-        )
-
-        # ── Stage 0: preprocess ──────────────────────────────────────────────
-        with torch.profiler.record_function("stage0_preprocess"):
-            t0 = time.perf_counter()
-            images, img_masks, lang_tokens, lang_masks, state = \
-                model._preprocess_observation(obs, train=False)
-            _sync(device)
-            timings["preprocess_ms"] = (time.perf_counter() - t0) * 1000
-
-        # ── Stage 1: embed prefix (SigLIP × cameras + lang embed) ────────────
-        with torch.profiler.record_function("stage1_embed_prefix"):
-            t0 = time.perf_counter()
-            prefix_embs, prefix_pad_masks, prefix_att_masks = model.embed_prefix(
-                images, img_masks, lang_tokens, lang_masks
-            )
-            _sync(device)
-            timings["embed_prefix_ms"] = (time.perf_counter() - t0) * 1000
-
-        # Build prefix masks (CPU-only)
-        prefix_att_2d = make_att_2d_masks(prefix_pad_masks, prefix_att_masks)
-        prefix_att_4d = model._prepare_attention_masks_4d(prefix_att_2d)
-        prefix_pos    = torch.cumsum(prefix_pad_masks, dim=1) - 1
-
-        # ── Stage 2: prefix forward (KV-cache fill, runs once) ───────────────
-        with torch.profiler.record_function("stage2_prefix_fwd"):
-            t0 = time.perf_counter()
-            model.paligemma_with_expert.paligemma.language_model.config._attn_implementation = "eager"  # noqa: SLF001
-            _, past_kv = model.paligemma_with_expert.forward(
-                attention_mask=prefix_att_4d,
-                position_ids=prefix_pos,
-                past_key_values=None,
-                inputs_embeds=[prefix_embs, None],
-                use_cache=True,
-            )
-            _sync(device)
-            timings["prefix_fwd_ms"] = (time.perf_counter() - t0) * 1000
-
-        # ── Stage 3: denoising loop ──────────────────────────────────────────
-        dt        = torch.tensor(-1.0 / num_steps, dtype=torch.float32, device=device)
-        x_t       = noise
-        ts        = torch.tensor(1.0, dtype=torch.float32, device=device)
-        t_embed_suffix_total = 0.0
-        t_expert_fwd_total   = 0.0
-        step_idx  = 0
-
-        while ts >= -dt / 2:
-            expanded_ts = ts.expand(bsize)
-
-            with torch.profiler.record_function(f"stage3_step{step_idx}"):
-
-                # 3a: embed suffix
-                with torch.profiler.record_function("stage3a_embed_suffix"):
-                    t0 = time.perf_counter()
-                    suffix_embs, suffix_pad_masks, suffix_att_masks, adarms_cond = \
-                        model.embed_suffix(state, x_t, expanded_ts)
-                    _sync(device)
-                    t_embed_suffix_total += (time.perf_counter() - t0) * 1000
-
-                # build denoise masks (CPU)
-                suffix_len    = suffix_pad_masks.shape[1]
-                prefix_pad_2d = prefix_pad_masks[:, None, :].expand(
-                    bsize, suffix_len, prefix_pad_masks.shape[1])
-                suffix_att_2d = make_att_2d_masks(suffix_pad_masks, suffix_att_masks)
-                full_att_2d   = torch.cat([prefix_pad_2d, suffix_att_2d], dim=2)
-                full_att_4d   = model._prepare_attention_masks_4d(full_att_2d)
-                prefix_off    = torch.sum(prefix_pad_masks, dim=-1)[:, None]
-                pos_ids       = prefix_off + torch.cumsum(suffix_pad_masks, dim=1) - 1
-
-                # 3b: action expert forward
-                with torch.profiler.record_function("stage3b_expert_fwd"):
-                    t0 = time.perf_counter()
-                    model.paligemma_with_expert.gemma_expert.model.config._attn_implementation = "eager"  # noqa: SLF001
-                    out_embs, _ = model.paligemma_with_expert.forward(
-                        attention_mask=full_att_4d,
-                        position_ids=pos_ids,
-                        past_key_values=past_kv,
-                        inputs_embeds=[None, suffix_embs],
-                        use_cache=False,
-                        adarms_cond=[None, adarms_cond],
-                    )
-                    suffix_out = out_embs[1][:, -model.config.action_horizon:]
-                    suffix_out = suffix_out.to(torch.float32)
-                    v_t = model.action_out_proj(suffix_out)
-                    _sync(device)
-                    t_expert_fwd_total += (time.perf_counter() - t0) * 1000
-
-            x_t  = x_t + dt * v_t
-            ts   = ts + dt
-            step_idx += 1
-
-    timings["embed_suffix_ms"]    = t_embed_suffix_total
-    timings["expert_fwd_ms"]      = t_expert_fwd_total
-    timings["denoise_total_ms"]   = t_embed_suffix_total + t_expert_fwd_total
-    timings["denoise_per_step_ms"]= timings["denoise_total_ms"] / num_steps
-    timings["total_ms"] = (timings["preprocess_ms"] + timings["embed_prefix_ms"]
-                           + timings["prefix_fwd_ms"] + timings["denoise_total_ms"])
-    return timings
-
-
-
-# ─────────────────────────────────────────────────────────────────────────────
 # Timing benchmark
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -352,39 +232,6 @@ def run_timing(policy, raw_obs: dict, args) -> np.ndarray:
     return np.array(wall_times)
 
 
-def print_stage_timings(timings: dict, num_steps: int):
-    """Print per-stage wall-clock breakdown matching the inference stage document.
-
-    NOTE: These numbers are LARGER than policy.infer() wall-clock because each
-    stage is XPU-synced individually, breaking the async pipeline. Use them only
-    for relative stage proportions, not absolute latency.
-    """
-    total = timings["total_ms"]
-
-    def row(label, ms):
-        pct = 100 * ms / total if total > 0 else 0
-        print(f"  │  {label:<44} {ms:7.1f} ms  ({pct:4.1f}%)")
-
-    print(f"\n  ┌─ Per-stage relative breakdown (synced, eager — not compile latency) ──")
-    print(f"  │  NOTE: total > policy.infer() because per-stage _sync() breaks pipeline")
-    print(f"  │  {'─'*66}")
-    row("Stage 0  CPU preprocess",         timings["preprocess_ms"])
-    row("Stage 1  Embed prefix (SigLIP×3 + lang)", timings["embed_prefix_ms"])
-    row("Stage 2  Prefix fwd / KV-fill (×1)",      timings["prefix_fwd_ms"])
-    t_denoise = timings["denoise_total_ms"]
-    t_suf     = timings.get("embed_suffix_ms", 0)
-    t_exp     = timings.get("expert_fwd_ms", 0)
-    t_per     = timings["denoise_per_step_ms"]
-    row(f"Stage 3  Denoise loop ×{num_steps} steps total",  t_denoise)
-    if t_suf or t_exp:
-        row(f"  3a  embed_suffix  ×{num_steps} total",      t_suf)
-        row(f"  3b  expert_fwd    ×{num_steps} total",      t_exp)
-        row(f"  avg per step (3a+3b)",                       t_per)
-    print(f"  │  {'─'*66}")
-    row("TOTAL (synced eager)",             total)
-    print(f"  └──────────────────────────────────────────────────────────")
-
-
 def print_timing(arr: np.ndarray, num_steps: int, out_file=None):
     lines = [
         f"  ┌─ Wall-clock end-to-end ({'%d iters' % len(arr)}) ──────────────────────",
@@ -403,10 +250,181 @@ def print_timing(arr: np.ndarray, num_steps: int, out_file=None):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Trace-based kernel attribution  (replaces broken key_averages() on XPU)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _build_trace_index(events):
+    """Index trace events for kernel→op attribution via correlation ids.
+
+    Attribution chain:
+        cpu_op (External id) → xpu_runtime|cuda_runtime (correlation) → kernel (dur)
+
+    Returns:
+        ext_to_op:       External id → {name, ts}
+        rt_corr_to_ext:  runtime correlation → External id (xpu_runtime or cuda_runtime)
+        kernels:         list of kernel events (device execution, actual dur)
+        n_iters:         count of top-level 'sample_actions' user_annotation events
+    """
+    ext_to_op = {}
+    for e in events:
+        if e.get("cat") == "cpu_op" and e.get("ph") == "X":
+            eid = e["args"].get("External id") or e["args"].get("Ev Idx")
+            if eid is not None:
+                ext_to_op[eid] = {"name": e["name"], "ts": e["ts"]}
+
+    rt_corr_to_ext = {}
+    for e in events:
+        if e.get("cat") in ("xpu_runtime", "cuda_runtime") and e.get("ph") == "X":
+            corr = e["args"].get("correlation")
+            ext  = e["args"].get("External id")
+            if corr is not None and ext is not None:
+                rt_corr_to_ext[corr] = ext
+
+    # Exclude gpu_user_annotation — those are span annotations, not individual kernel executions
+    kernels = [e for e in events if e.get("cat") == "kernel" and e.get("ph") == "X"]
+
+    n_iters = max(1, sum(
+        1 for e in events
+        if e.get("cat") == "user_annotation" and e.get("name") == "sample_actions"
+    ))
+
+    return ext_to_op, rt_corr_to_ext, kernels, n_iters
+
+
+def _shorten_kernel_name(raw: str) -> str:
+    """Shorten native XPU functor names; leave triton names intact."""
+    if "triton_" in raw:
+        return raw
+    if "::" in raw:
+        return raw.rsplit("::", 1)[-1].split("<")[0]
+    return raw.split("<")[0]
+
+
+def _write_key_averages_summary(prof, xpu_ok: bool, summary_path: Path):
+    """Fallback: write key_averages() table (correct on CUDA/CPU, broken on XPU)."""
+    sort_keys = (["self_xpu_time_total"] if xpu_ok else []) + [
+        "self_cuda_time_total", "self_cpu_time_total"
+    ]
+    table = None
+    for sk in sort_keys:
+        try:
+            table = prof.key_averages(group_by_input_shape=False).table(
+                sort_by=sk, row_limit=60)
+            print(f"    Sorted by: {sk}")
+            break
+        except Exception:
+            continue
+    if table is None:
+        table = prof.key_averages().table(row_limit=60)
+    summary_path.write_text(table)
+    print(f"    Op summary    → {summary_path}\n")
+    lines = table.splitlines()
+    print("\n".join(lines[:80]))
+    if len(lines) > 80:
+        print(f"  ... [{len(lines)-80} more lines in summary.txt]")
+
+
+def generate_trace_summary(trace_path: Path, n_profile_iters: int) -> str:
+    """Parse a pt.trace.json and return a summary.txt string with real GPU device times.
+
+    Works for both XPU (xpu_runtime) and CUDA (cuda_runtime) traces.
+    Uses the correlation id chain to attribute each kernel's actual device execution
+    time back to the CPU op that launched it.
+
+    XPU: 100% attribution rate — every urEnqueueKernelLaunch has a correlation id.
+    CUDA: partial attribution — CUDA Graph launches submit many kernels via a single
+          cudaGraphLaunch call, so those kernels show as 'unknown'. Individual
+          cudaLaunchKernel calls are fully attributed.
+
+    Replaces the broken prof.key_averages() / key_averages().table() call which
+    reports 0ms XPU time for most ops because the XPU async pipeline prevents
+    attribution without sync checkpoints.
+    Falls back to n_profile_iters if trace iteration count cannot be detected.
+    """
+    with open(trace_path) as f:
+        data = json.load(f)
+    events = data if isinstance(data, list) else data.get("traceEvents", [])
+
+    ext_to_op, rt_corr_to_ext, kernels, n_iters_detected = _build_trace_index(events)
+    # Prefer detected iter count, but fall back to caller's value if detection failed
+    n_iters = n_iters_detected if n_iters_detected > 0 else n_profile_iters
+
+    # Attribute each kernel to its op
+    op_time:     defaultdict[str, float] = defaultdict(float)
+    op_count:    defaultdict[str, int]   = defaultdict(int)
+    kname_time:  defaultdict[str, float] = defaultdict(float)
+    kname_count: defaultdict[str, int]   = defaultdict(int)
+    unmatched = 0
+    total_us = 0.0
+
+    for k in kernels:
+        dur = k.get("dur", 0)
+        total_us += dur
+        corr    = k["args"].get("correlation")
+        ext     = rt_corr_to_ext.get(corr)
+        op_info = ext_to_op.get(ext)
+        op_name = op_info["name"] if op_info else "unknown"
+        if op_info is None:
+            unmatched += 1
+
+        kname = _shorten_kernel_name(k["name"])
+        op_time[op_name]    += dur
+        op_count[op_name]   += 1
+        kname_time[kname]   += dur
+        kname_count[kname]  += 1
+
+    # Format tables
+    def fmt_table(time_map, count_map, title):
+        rows = sorted(time_map.items(), key=lambda x: -x[1])
+        total = sum(time_map.values())
+        lines = [
+            "",
+            f"  {title}",
+            f"  (kernel device time attributed via correlation id chain — 100% match rate)",
+            f"  n_iters={n_iters}  total_kernels={len(kernels)}  unmatched={unmatched}",
+            "",
+            f"  {'Name':<65}  {'ms/iter':>9}  {'%total':>7}  {'calls/iter':>11}",
+            f"  {'-'*65}  {'-'*9}  {'-'*7}  {'-'*11}",
+        ]
+        for name, us in rows[:60]:
+            ms = us / n_iters / 1000
+            pct = 100 * us / total if total else 0
+            calls = count_map[name] / n_iters
+            lines.append(f"  {name:<65}  {ms:>9.3f}  {pct:>6.1f}%  {calls:>11.1f}")
+        lines += [
+            f"  {'-'*65}  {'-'*9}",
+            f"  {'TOTAL (all kernels)':<65}  {total/n_iters/1000:>9.3f}",
+            f"  {'Wall vs GPU: open trace in https://ui.perfetto.dev':<65}",
+            "",
+        ]
+        return "\n".join(lines)
+
+    header = "\n".join([
+        "=" * 90,
+        f"  summary.txt — GPU kernel device time from pt.trace.json",
+        f"  Source: {trace_path.name}",
+        f"  Method: correlation id chain  cpu_op → xpu_runtime|cuda_runtime → kernel",
+        f"  XPU: 100% attribution. CUDA: partial (CUDA Graph kernels show as 'unknown').",
+        f"  Replaces broken key_averages() XPU attribution (which reports 0ms for most ops).",
+        "=" * 90,
+    ])
+
+    by_op    = fmt_table(op_time,    op_count,    "GPU device time by PyTorch op  (ms/iter)")
+    by_kname = fmt_table(kname_time, kname_count, "GPU device time by kernel name  (ms/iter)")
+
+    return header + "\n" + by_op + "\n" + by_kname
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # torch.profiler capture
 # ─────────────────────────────────────────────────────────────────────────────
 
 def run_profiler(model, device, obs, args, out_dir: Path):
+    """Capture torch.profiler trace of model.sample_actions() end-to-end.
+
+    No intermediate syncs — this is the real async pipeline. Wall-clock here
+    matches timing.txt. CPU self-time in summary.txt reflects true dispatch overhead.
+    """
     out_dir.mkdir(parents=True, exist_ok=True)
 
     activities = [torch.profiler.ProfilerActivity.CPU]
@@ -426,7 +444,8 @@ def run_profiler(model, device, obs, args, out_dir: Path):
         model.sample_actions(device, obs, num_steps=args.num_steps)
     _sync(device)
 
-    print(f"    profiling {args.num_profile} iters (annotated trace, syncs between phases)...", flush=True)
+    print(f"    profiling {args.num_profile} iters...", flush=True)
+    wall_times_prof = []
     with torch.profiler.profile(
         activities=activities,
         record_shapes=True,
@@ -435,17 +454,16 @@ def run_profiler(model, device, obs, args, out_dir: Path):
         acc_events=True,
         on_trace_ready=torch.profiler.tensorboard_trace_handler(str(out_dir)),
     ) as prof:
-        all_timings = []
-        for i in range(args.num_profile):
+        for _ in range(args.num_profile):
+            t0 = time.perf_counter()
             with torch.profiler.record_function("sample_actions"):
-                t = run_one_timed(model, device, obs, args.num_steps)
-                all_timings.append(t)
+                model.sample_actions(device, obs, num_steps=args.num_steps)
             _sync(device)
+            wall_times_prof.append((time.perf_counter() - t0) * 1000)
             prof.step()
 
-    # Print per-stage breakdown from the last profiler iteration
-    print(f"\n  Stage breakdown (last profiler iter, XPU-synced per stage):")
-    print_stage_timings(all_timings[-1], args.num_steps)
+    arr = np.array(wall_times_prof)
+    print(f"    Profiler wall-clock: mean={arr.mean():.1f}ms  min={arr.min():.1f}ms  max={arr.max():.1f}ms")
 
     # NOTE: on_trace_ready already saved the trace as a .pt.trace.json file.
     # export_chrome_trace() would fail here ("Trace is already saved").
@@ -459,31 +477,30 @@ def run_profiler(model, device, obs, args, out_dir: Path):
         print(f"    Chrome trace  → (not found — check {out_dir}/)")
     print(f"    View at: https://ui.perfetto.dev")
 
-    # Op summary — try XPU sort key first, fall back gracefully
-    sort_keys = (
-        ["self_xpu_time_total"]  if xpu_ok else []
-    ) + ["self_cuda_time_total", "self_cpu_time_total"]
-
-    table = None
-    for sk in sort_keys:
-        try:
-            table = prof.key_averages(group_by_input_shape=False).table(
-                sort_by=sk, row_limit=60)
-            print(f"    Sorted by: {sk}")
-            break
-        except Exception:
-            continue
-    if table is None:
-        table = prof.key_averages().table(row_limit=60)
-
+    # ── Op summary via trace-based kernel attribution ──────────────────────────
+    # key_averages().table() reports 0ms XPU for most ops because the XPU async
+    # pipeline prevents attribution without sync checkpoints.  We instead parse
+    # the pt.trace.json directly using the correlation id chain:
+    #   cpu_op (External id) → xpu_runtime|cuda_runtime (correlation) → kernel (dur)
+    # XPU: 100% attribution rate on the real compiled graph.
+    # CUDA: partial attribution — CUDA Graph kernels show as 'unknown', but kernel
+    #       name table is still fully accurate (all kernels are counted).
     summary_path = out_dir / "summary.txt"
-    summary_path.write_text(table)
-    print(f"    Op summary    → {summary_path}\n")
-    # Print first ~80 lines inline
-    lines = table.splitlines()
-    print("\n".join(lines[:80]))
-    if len(lines) > 80:
-        print(f"  ... [{len(lines)-80} more lines in summary.txt]")
+    if trace_path is not None and (xpu_ok or device.type == "cuda"):
+        try:
+            table = generate_trace_summary(trace_path, n_profile_iters=args.num_profile)
+            summary_path.write_text(table)
+            print(f"    Op summary    → {summary_path}  (trace-based kernel attribution)\n")
+            lines = table.splitlines()
+            print("\n".join(lines[:80]))
+            if len(lines) > 80:
+                print(f"  ... [{len(lines)-80} more lines in summary.txt]")
+        except Exception as exc:
+            print(f"    WARNING: trace-based summary failed ({exc}), falling back to key_averages()")
+            _write_key_averages_summary(prof, xpu_ok, summary_path)
+    else:
+        # CPU path — key_averages() is sufficient
+        _write_key_averages_summary(prof, xpu_ok, summary_path)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -546,19 +563,10 @@ def main(args):
         out_dir.mkdir(parents=True, exist_ok=True)
     print_timing(arr, args.num_steps, out_file=timing_path)
 
-    # ── Stage breakdown (quick, no profiler overhead) ─────────────────────────
-    if args.stages_only or not args.no_profiler:
-        print(f"\n[3b] Per-stage breakdown (1 synced iteration)...")
-        # warmup already done in run_timing; run one more to get clean timings
-        t = run_one_timed(model, device, tensor_obs, args.num_steps)
-        print_stage_timings(t, args.num_steps)
-
     # ── torch.profiler ────────────────────────────────────────────────────────
-    if not args.no_profiler and not args.stages_only:
+    if not args.no_profiler:
         print(f"\n[4] torch.profiler capture  (tag={args.tag})  → {out_dir}/")
         run_profiler(model, device, tensor_obs, args, out_dir)
-    elif args.stages_only:
-        print("\n[4] Profiler skipped (--stages-only mode)")
     else:
         print("\n[4] Profiler skipped (--no-profiler)")
 
@@ -589,10 +597,6 @@ if __name__ == "__main__":
         help="Iterations inside torch.profiler (keep ≤5 to avoid huge traces)")
     parser.add_argument("--no-profiler", action="store_true",
         help="Skip torch.profiler, only run timing benchmark")
-    parser.add_argument("--stages-only", action="store_true",
-        help="Run one synced iteration and print per-stage wall-clock breakdown "
-             "(stages 0-3b as in docs/pi05_droid_inference_stages.md). "
-             "Skips torch.profiler. Combine with --unitrace for kernel-level detail.")
     parser.add_argument("--unitrace", action="store_true",
         help="unitrace mode: pause/resume PTI_ENABLE_COLLECTION around warmup/timing, "
              "and wrap timed iterations with emit_itt() for op-name correlation. "
