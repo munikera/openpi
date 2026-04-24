@@ -418,7 +418,7 @@ class WebViewer:
         viewer.stop()
     """
 
-    def __init__(self, port: int = 8765, host: str = "0.0.0.0"):
+    def __init__(self, port: int = 9000, host: str = "0.0.0.0"):
         self.port = port
         self.host = host
         self._server: Optional[HTTPServer] = None
@@ -479,7 +479,7 @@ if __name__ == "__main__":
     import math
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--port", type=int, default=8765, help="HTTP port to serve on (default: 8765)")
+    parser.add_argument("--port", type=int, default=9000, help="HTTP port to serve on (default: 9000)")
     pargs = parser.parse_args()
 
     viewer = WebViewer(port=pargs.port)

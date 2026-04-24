@@ -1,6 +1,28 @@
 """
 OpenPI LIBERO Evaluation on Intel XPU — Single Command
-=======================================================
+=========================        # Action un-normalization: model outputs in normalized space → robot space.
+        # pi05_libero uses USE_QUANTILE_NORM=True, so the formula is QUANTILE un-normalization:
+        #   x = (x_norm + 1.0) / 2.0 * (q99 - q01 + 1e-6) + q01
+        # This is implemented by transforms.Unnormalize(use_quantiles=True).
+        if "actions" in norm_stats:
+            ns = norm_stats["actions"]
+            if ns.q01 is not None and ns.q99 is not None:
+                self._action_q01 = np.array(ns.q01, dtype=np.float32)[:7]
+                self._action_q99 = np.array(ns.q99, dtype=np.float32)[:7]
+                print(f"[OVLiberoPolicy] Using QUANTILE unnorm for actions")
+                print(f"[OVLiberoPolicy] action q01[:3]: {self._action_q01[:3]}")
+                print(f"[OVLiberoPolicy] action q99[:3]: {self._action_q99[:3]}")
+            else:
+                # Fallback to z-score (not expected for pi05)
+                self._action_q01 = None
+                self._action_q99 = None
+                self._action_mean = np.array(ns.mean, dtype=np.float32)[:7]
+                self._action_std  = np.array(ns.std,  dtype=np.float32)[:7]
+                print(f"[OVLiberoPolicy] WARNING: using z-score unnorm (no q01/q99 found)")
+        else:
+            self._action_q01 = None
+            self._action_q99 = None
+            print("[OVLiberoPolicy] WARNING: no 'actions' norm_stats — outputs NOT unnormalized")==================
 
 Based on examples/libero/main.py but loads the Pi0.5 model DIRECTLY on XPU
 in the main process and runs LIBERO simulation in a subprocess worker
@@ -46,6 +68,130 @@ from openpi_client import image_tools
 LIBERO_DUMMY_ACTION = [0.0] * 6 + [-1.0]
 LIBERO_ENV_RESOLUTION = 256  # resolution used to render training data
 WORKER_SCRIPT = pathlib.Path(__file__).parent / "libero_env_worker.py"
+
+
+# ── OpenVINO policy wrapper ───────────────────────────────────────────────
+
+class OVLiberoPolicy:
+    """Drop-in replacement for a PyTorch policy that uses a compiled OV model.
+
+    Replicates the preprocessing from LiberoInputs + the model's
+    _preprocess_observation, then calls OV infer instead of torch forward.
+
+    The OV model was exported from LiberoInferenceWrapper, which:
+      - Takes (images[1,3,3,224,224], img_masks[1,3], lang_tokens[1,48],
+               lang_masks[1,48], state[1,8], noise[1,10,32])
+      - Returns actions[1,10,7]  (in NORMALIZED model space)
+
+    Transforms applied to match the PyTorch policy pipeline:
+      Input:  images uint8 [H,W,C] → float32 CHW [-1, 1]  (Observation.from_dict)
+      Output: actions (model space) → robot space via Unnormalize(norm_stats)
+      Noise:  N(0,1) random, same as sample_noise()
+    """
+
+    def __init__(self, xml_path: str, tokenizer, norm_stats: dict, ov_device: str = "GPU",
+                 num_steps: int = 10, action_horizon: int = 10,
+                 action_dim_full: int = 32, tokenizer_len: int = 48,
+                 state_dim: int = 8):
+        import openvino as ov
+        from openpi_client import image_tools as _it
+
+        self._it = _it
+        self.num_steps = num_steps
+        self.action_horizon = action_horizon
+        self.action_dim_full = action_dim_full
+        self.tokenizer_len = tokenizer_len
+        self.state_dim = state_dim
+        self._tokenizer = tokenizer
+
+        # Action un-normalization: model outputs in normalized space → robot space
+        # pi05_libero uses USE_QUANTILE_NORM=True, so the formula is QUANTILE un-normalization:
+        #   x = (x_norm + 1.0) / 2.0 * (q99 - q01 + 1e-6) + q01
+        # This is implemented by transforms.Unnormalize(use_quantiles=True).
+        if "actions" in norm_stats:
+            ns = norm_stats["actions"]
+            if ns.q01 is not None and ns.q99 is not None:
+                self._action_q01 = np.array(ns.q01, dtype=np.float32)[:7]
+                self._action_q99 = np.array(ns.q99, dtype=np.float32)[:7]
+                print(f"[OVLiberoPolicy] Using QUANTILE unnorm for actions")
+                print(f"[OVLiberoPolicy] action q01[:3]: {self._action_q01[:3]}")
+                print(f"[OVLiberoPolicy] action q99[:3]: {self._action_q99[:3]}")
+            else:
+                # Fallback to z-score (not expected for pi05)
+                self._action_q01 = None
+                self._action_q99 = None
+                self._action_mean = np.array(ns.mean, dtype=np.float32)[:7]
+                self._action_std  = np.array(ns.std,  dtype=np.float32)[:7]
+                print(f"[OVLiberoPolicy] WARNING: using z-score unnorm (no q01/q99 found)")
+        else:
+            self._action_q01 = None
+            self._action_q99 = None
+            print("[OVLiberoPolicy] WARNING: no 'actions' norm_stats — outputs NOT unnormalized")
+
+        core = ov.Core()
+        config = {}
+        if ov_device.startswith("GPU"):
+            config["GPU_ENABLE_SDPA_OPTIMIZATION"] = "YES"
+        compiled = core.compile_model(xml_path, device_name=ov_device, config=config)
+        self._infer_req = compiled.create_infer_request()
+        print(f"[OVLiberoPolicy] Compiled on {ov_device}: {xml_path}")
+
+    def _tokenize(self, prompt: str):
+        # PaligemmaTokenizer.tokenize() returns (tokens_np[max_len], mask_np[max_len])
+        tokens, masks = self._tokenizer.tokenize(prompt)
+        return tokens.astype(np.int64), masks.astype(np.float32)
+
+    def infer(self, obs: dict) -> dict:
+        """obs keys: observation/image, observation/wrist_image, observation/state, prompt"""
+        img = obs["observation/image"]       # [224,224,3] uint8
+        wrist = obs["observation/wrist_image"]  # [224,224,3] uint8
+        state = np.asarray(obs["observation/state"], dtype=np.float32)
+
+        # Images must be float32 in [-1, 1] CHW — matching Observation.from_dict which does:
+        #   uint8 [B,H,W,C]  →  float32 [B,C,H,W]  /255 * 2 - 1
+        # LiberoInferenceWrapper calls embed_prefix directly (bypassing _preprocess_observation),
+        # so the OV model was exported expecting [-1, 1] float32 CHW inputs.
+        img_f   = img.astype(np.float32) / 255.0 * 2.0 - 1.0    # [224,224,3]  values [-1, 1]
+        wrist_f = wrist.astype(np.float32) / 255.0 * 2.0 - 1.0  # [224,224,3]  values [-1, 1]
+        zeros_f = np.zeros_like(img_f)                            # right_wrist = zeros (masked out)
+
+        # Stack cameras: [1, 3, 3, 224, 224]  (CHW order for the model)
+        def hwc_to_chw(x):
+            return np.transpose(x, (2, 0, 1))
+
+        images = np.stack([
+            hwc_to_chw(img_f),
+            hwc_to_chw(wrist_f),
+            hwc_to_chw(zeros_f),
+        ], axis=0)[None]  # [1,3,3,224,224]
+
+        img_masks = np.array([[1.0, 1.0, 0.0]], dtype=np.float32)  # right_wrist masked
+
+        lang_tokens, lang_masks = self._tokenize(str(obs.get("prompt", "")))
+        lang_tokens = lang_tokens[None]  # [1, 48]
+        lang_masks  = lang_masks[None]   # [1, 48]
+
+        state_in = state[None]  # [1, 8]
+
+        # Sample noise from N(0,1) — same as model.sample_noise() in the PyTorch path.
+        # Using zeros would always start denoising from the same point → wrong trajectories.
+        noise = np.random.randn(1, self.action_horizon, self.action_dim_full).astype(np.float32)
+
+        inputs = [images, img_masks, lang_tokens, lang_masks, state_in, noise]
+        self._infer_req.infer(inputs)
+        actions = self._infer_req.get_output_tensor(0).data.copy()  # [1, 10, 7]
+        actions = actions[0]  # [10, 7]
+
+        # Un-normalize actions from model space → robot space.
+        # pi05_libero uses quantile normalization (use_quantile_norm=True):
+        #   model output x_norm ∈ [-1, 1]  →  robot space: (x_norm + 1) / 2 * (q99 - q01) + q01
+        if self._action_q01 is not None:
+            actions = (actions + 1.0) / 2.0 * (self._action_q99 - self._action_q01 + 1e-6) + self._action_q01
+        elif hasattr(self, "_action_mean") and self._action_mean is not None:
+            # fallback z-score (not used for pi05)
+            actions = actions * (self._action_std + 1e-6) + self._action_mean
+
+        return {"actions": actions}  # [10, 7]
 
 
 # ── IPC helpers ──────────────────────────────────────────────────────────
@@ -148,6 +294,14 @@ class TeeStream:
 @dataclasses.dataclass
 class Args:
     #################################################################################################################
+    # OpenVINO: set to path of exported model.xml to use OV inference instead of PyTorch.
+    # Export first with:  python scripts/convert_libero_openvino.py --export-onnx --onnx-to-ov
+    # Example: ov_model_path = "profiler_output/libero_fp32/model.xml"
+    #################################################################################################################
+    ov_model_path: str | None = None  # None = use PyTorch; path = use OV GPU inference
+    ov_device: str = "GPU"            # OV device: "GPU"=Arc, "CPU"=fallback, "AUTO"=best
+
+    #################################################################################################################
     # Model parameters (new — not in main.py)
     #################################################################################################################
     config_name: str = "pi05_libero"
@@ -171,7 +325,7 @@ class Args:
     task_suite_name: str = (
         "libero_spatial"  # Options: libero_spatial, libero_object, libero_goal, libero_10, libero_90, all
     )
-    num_steps_wait: int = 2  # Number of steps to wait for objects to stabilize in sim
+    num_steps_wait: int = 2  # Number of steps to wait for objects to stabilize in sim (must match main.py=10)
     num_trials_per_task: int = 5  # Number of rollouts per task
 
     #################################################################################################################
@@ -182,7 +336,7 @@ class Args:
 
     # Web viewer: stream live simulation frames to http://localhost:<web_viewer_port>
     # Set to 0 to disable.
-    web_viewer_port: int = 8765
+    web_viewer_port: int = 9000
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────
@@ -227,6 +381,30 @@ def eval_libero(args: Args) -> None:
     )
     print("Model loaded.")
 
+    # Load norm_stats (needed for OV action un-normalization)
+    from openpi.training import checkpoints as _checkpoints
+    from openpi.shared import download as _download
+    _ckpt_dir = _download.maybe_download(checkpoint_dir)
+    _data_config = config.data.create(config.assets_dirs, config.model)
+    _norm_stats = _checkpoints.load_norm_stats(
+        os.path.join(_ckpt_dir, "assets"), _data_config.asset_id
+    )
+
+    # Optionally replace with OpenVINO compiled model
+    ov_policy: OVLiberoPolicy | None = None
+    if args.ov_model_path is not None:
+        from openpi.models.tokenizer import PaligemmaTokenizer as _PaligemmaTokenizer
+        _tokenizer = _PaligemmaTokenizer(max_len=48)  # matches tokenizer_len in OVLiberoPolicy
+        _num_steps = args.num_steps if args.num_steps is not None else 10
+        ov_policy = OVLiberoPolicy(
+            xml_path=args.ov_model_path,
+            tokenizer=_tokenizer,
+            norm_stats=_norm_stats,
+            ov_device=args.ov_device,
+            num_steps=_num_steps,
+        )
+        print(f"[OV] OpenVINO policy active on {args.ov_device}")
+
     # Start web viewer
     viewer: WebViewer | None = None
     if args.web_viewer_port > 0:
@@ -239,14 +417,17 @@ def eval_libero(args: Args) -> None:
     for _ in range(3):
         dummy = libero_policy.make_libero_example()
         dummy["prompt"] = "warmup"
-        policy.infer(dummy)
+        if ov_policy is not None:
+            ov_policy.infer(dummy)
+        else:
+            policy.infer(dummy)
     print("Warmup done.\n")
 
     suite_summaries: list[tuple[str, float]] = []
 
     for suite_name in suites:
         suite_args = dataclasses.replace(args, task_suite_name=suite_name)
-        sr = _eval_single_suite(suite_args, policy, viewer=viewer)
+        sr = _eval_single_suite(suite_args, policy, viewer=viewer, ov_policy=ov_policy)
         suite_summaries.append((suite_name, sr))
 
     if viewer:
@@ -284,7 +465,8 @@ def eval_libero(args: Args) -> None:
         print(f"\nCombined results saved to {combined_path}")
 
 
-def _eval_single_suite(args: Args, policy, viewer: "WebViewer | None" = None) -> float:
+def _eval_single_suite(args: Args, policy, viewer: "WebViewer | None" = None,
+                       ov_policy: "OVLiberoPolicy | None" = None) -> float:
     """Evaluate a single task suite. Returns success rate percentage (0-100)."""
     # Set random seed
     np.random.seed(args.seed)
@@ -404,7 +586,10 @@ def _eval_single_suite(args: Args, policy, viewer: "WebViewer | None" = None) ->
                         }
 
                         infer_start = time.time()
-                        result = policy.infer(element)
+                        if ov_policy is not None:
+                            result = ov_policy.infer(element)
+                        else:
+                            result = policy.infer(element)
                         action_chunk = result["actions"]
                         infer_end = time.time()
 
