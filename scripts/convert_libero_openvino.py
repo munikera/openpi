@@ -36,6 +36,13 @@ Usage:
 
   # CPU-only verification (no Arc needed):
   python scripts/convert_libero_openvino.py --export-onnx --onnx-to-ov --benchmark --ov-device CPU
+
+  # FP16 export (smaller model, faster on Arc GPU — recommended):
+  python scripts/convert_libero_openvino.py --onnx-to-ov --compress-to-fp16 --benchmark
+  # (ONNX already exported; this re-converts with weight compression to fp16)
+
+  # Full FP16 pipeline from scratch:
+  python scripts/convert_libero_openvino.py --export-onnx --onnx-to-ov --compress-to-fp16 --benchmark
 """
 
 import dataclasses
@@ -58,7 +65,13 @@ class Args:
 
     # Output directories
     onnx_dir:    str = "profiler_output/libero_onnx"    # pi05_libero.onnx
-    ov_fp32_dir: str = "profiler_output/libero_fp32"    # model.xml / model.bin
+    ov_fp32_dir: str = "profiler_output/libero_fp32"    # model.xml / model.bin  (fp32)
+    ov_fp16_dir: str = "profiler_output/libero_fp16"    # model.xml / model.bin  (fp16/bf16)
+
+    # Compress weights to fp16 when running --onnx-to-ov.
+    # OV GPU executes fp16 models natively on Arc — typically 10–30% faster than fp32.
+    # The ONNX graph is still exported in fp32; OV compresses weights at save time.
+    compress_to_fp16: bool = False
 
     # OV inference device
     ov_device: str = "GPU"   # "GPU" = Arc, "CPU" = fallback, "AUTO" = best available
@@ -300,18 +313,20 @@ def export_to_onnx(pi0_model, args: Args) -> Path:
 def onnx_to_ov_ir(onnx_path: Path, args: Args) -> Path:
     import openvino as ov
 
-    ov_dir = Path(args.ov_fp32_dir)
-    ov_dir.mkdir(parents=True, exist_ok=True)
-    xml_path = ov_dir / "model.xml"
+    out_dir = Path(args.ov_fp16_dir if args.compress_to_fp16 else args.ov_fp32_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    xml_path = out_dir / "model.xml"
 
+    precision_label = "FP16" if args.compress_to_fp16 else "FP32"
     print("\n" + "=" * 60)
-    print("STEP 2: ONNX → OV IR  [pi05_libero FP32]")
+    print(f"STEP 2: ONNX → OV IR  [pi05_libero {precision_label}]")
     print("=" * 60)
-    print(f"  Input  : {onnx_path}")
-    print(f"  Output : {xml_path}")
+    print(f"  Input          : {onnx_path}")
+    print(f"  Output         : {xml_path}")
+    print(f"  compress_to_fp16: {args.compress_to_fp16}")
 
     ov_model = ov.convert_model(str(onnx_path))
-    ov.save_model(ov_model, output_model=str(xml_path), compress_to_fp16=False)
+    ov.save_model(ov_model, output_model=str(xml_path), compress_to_fp16=args.compress_to_fp16)
 
     bin_mb = xml_path.with_suffix(".bin").stat().st_size / 1e6
     print(f"\n[OV Export] ✓ {xml_path}  ({bin_mb:.0f} MB bin)")
@@ -419,6 +434,8 @@ def main(args: Args):
 
     onnx_path = Path(args.onnx_dir) / "pi05_libero.onnx"
     fp32_xml  = Path(args.ov_fp32_dir) / "model.xml"
+    fp16_xml  = Path(args.ov_fp16_dir) / "model.xml"
+    active_xml = fp16_xml if args.compress_to_fp16 else fp32_xml
     val_dir   = Path(args.onnx_dir) / "validation"
 
     print("=" * 60)
@@ -428,6 +445,7 @@ def main(args: Args):
     print(f"  Ckpt      : {checkpoint_dir}")
     print(f"  Steps     : {args.num_steps}  cameras: {args.num_cameras}  state: {args.state_dim}")
     print(f"  OV device : {args.ov_device}")
+    print(f"  Precision : {'FP16 (compress_to_fp16=True)' if args.compress_to_fp16 else 'FP32'}")
     print()
 
     if args.export_onnx:
@@ -450,16 +468,16 @@ def main(args: Args):
         if not onnx_path.exists():
             print(f"ERROR: {onnx_path} not found. Run --export-onnx first.")
             return
-        fp32_xml = onnx_to_ov_ir(onnx_path, args)
+        active_xml = onnx_to_ov_ir(onnx_path, args)
 
     if args.benchmark:
-        if not fp32_xml.exists():
-            print(f"ERROR: {fp32_xml} not found. Run --onnx-to-ov first.")
+        if not active_xml.exists():
+            print(f"ERROR: {active_xml} not found. Run --onnx-to-ov first.")
             return
-        benchmark_ov(fp32_xml, args)
+        benchmark_ov(active_xml, args)
 
         if (val_dir / "pytorch_output.pt").exists():
-            validate_ov_vs_pytorch(fp32_xml, val_dir)
+            validate_ov_vs_pytorch(active_xml, val_dir)
 
 
 if __name__ == "__main__":

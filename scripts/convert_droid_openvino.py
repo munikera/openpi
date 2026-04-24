@@ -61,9 +61,14 @@ class Args:
     config_name: str = "pi05_droid"
     checkpoint_dir: str = "~/.cache/openpi/openpi-assets/checkpoints/pi05_droid_pytorch"
 
-    # Output directories (mirrors Intel's layout)
-    onnx_dir:     str = "profiler_output/openvino_onnx"    # pi05.onnx
-    ov_fp32_dir:  str = "profiler_output/openvino_fp32"    # model.xml / model.bin
+    # Output directories
+    onnx_dir:     str = "profiler_output/droid_onnx"    # pi05_droid.onnx
+    ov_fp32_dir:  str = "profiler_output/droid_fp32"    # model.xml / model.bin  (fp32)
+    ov_fp16_dir:  str = "profiler_output/droid_fp16"    # model.xml / model.bin  (fp16)
+
+    # Compress weights to fp16 when running --onnx-to-ov.
+    # OV GPU executes fp16 models natively on Arc — typically 10–30% faster than fp32.
+    compress_to_fp16: bool = False
 
     # Which OpenVINO device to run on for benchmarking.
     # "GPU"  = Intel Arc (or any OV GPU plugin device)
@@ -363,16 +368,17 @@ def onnx_to_ov_ir(onnx_path: Path, args: Args, compress_to_fp16: bool = False):
     """Step 2 — ONNX → OV IR FP32 (follows Intel's onnx_to_ov_ir.py)."""
     import openvino as ov
 
-    ov_dir = Path(args.ov_fp32_dir)
+    ov_dir = Path(args.ov_fp16_dir if compress_to_fp16 else args.ov_fp32_dir)
     ov_dir.mkdir(parents=True, exist_ok=True)
     xml_path = ov_dir / "model.xml"
 
+    precision_label = "FP16" if compress_to_fp16 else "FP32"
     print("\n" + "=" * 60)
-    print("STEP 2: ONNX → OV IR")
+    print(f"STEP 2: ONNX → OV IR  [{precision_label}]")
     print("=" * 60)
     print(f"  Input  : {onnx_path}")
     print(f"  Output : {xml_path}")
-    print(f"  FP16 compress: {compress_to_fp16}")
+    print(f"  compress_to_fp16: {compress_to_fp16}")
 
     ov_model = ov.convert_model(str(onnx_path))
     ov.save_model(
@@ -495,6 +501,8 @@ def main(args: Args):
 
     onnx_path  = Path(args.onnx_dir)  / "pi05_droid.onnx"
     fp32_xml   = Path(args.ov_fp32_dir) / "model.xml"
+    fp16_xml   = Path(args.ov_fp16_dir) / "model.xml"
+    active_xml = fp16_xml if args.compress_to_fp16 else fp32_xml
     val_dir    = Path(args.onnx_dir) / "validation"
 
     print("=" * 60)
@@ -504,6 +512,7 @@ def main(args: Args):
     print(f"  Ckpt      : {checkpoint_dir}")
     print(f"  Steps     : {args.num_steps}")
     print(f"  OV device : {args.ov_device}  (benchmark)")
+    print(f"  Precision : {'FP16 (compress_to_fp16=True)' if args.compress_to_fp16 else 'FP32'}")
     print()
 
     # Load PyTorch model only when needed
@@ -531,18 +540,18 @@ def main(args: Args):
         if not onnx_path.exists():
             print(f"ERROR: {onnx_path} not found. Run --export-onnx first.")
             return
-        fp32_xml = onnx_to_ov_ir(onnx_path, args, compress_to_fp16=False)
+        active_xml = onnx_to_ov_ir(onnx_path, args, compress_to_fp16=args.compress_to_fp16)
 
     # Step 3: Benchmark
     if args.benchmark:
-        if not fp32_xml.exists():
-            print(f"ERROR: {fp32_xml} not found. Run --onnx-to-ov first.")
+        if not active_xml.exists():
+            print(f"ERROR: {active_xml} not found. Run --onnx-to-ov first.")
             return
-        benchmark_ov(fp32_xml, args, rng)
+        benchmark_ov(active_xml, args, rng)
 
         # Optional validation (if reference outputs exist)
         if (val_dir / "pytorch_output.pt").exists():
-            validate_ov_vs_pytorch(fp32_xml, val_dir, args)
+            validate_ov_vs_pytorch(active_xml, val_dir, args)
 
 
 if __name__ == "__main__":
