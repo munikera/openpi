@@ -436,12 +436,15 @@ class WebViewer:
             self._server.shutdown()
 
     def push_frame(self, img: np.ndarray, quality: int = 75):
-        """Push an HxWx3 uint8 RGB numpy array as the agent-view frame."""
+        """Push an HxWx3 uint8 RGB numpy array as the agent-view frame (non-blocking)."""
         if img is None:
             return
-        jpg = _encode_jpg(img, quality=quality)
-        with _state.lock:
-            _state.frame_jpg = jpg
+        img = img.copy()  # snapshot before handing off to background thread
+        def _encode_and_store():
+            jpg = _encode_jpg(img, quality=quality)
+            with _state.lock:
+                _state.frame_jpg = jpg
+        threading.Thread(target=_encode_and_store, daemon=True).start()
 
     def _update_fps(self, inf_dt: float):
         """Update the displayed FPS from a true inference latency measurement."""
@@ -450,12 +453,15 @@ class WebViewer:
             _state.fps = (1 - _state._fps_alpha) * _state.fps + _state._fps_alpha * inst_fps
 
     def push_wrist(self, img: np.ndarray, quality: int = 75):
-        """Push an HxWx3 uint8 RGB numpy array as the wrist-camera frame."""
+        """Push an HxWx3 uint8 RGB numpy array as the wrist-camera frame (non-blocking)."""
         if img is None:
             return
-        jpg = _encode_jpg(img, quality=quality)
-        with _state.lock:
-            _state.wrist_jpg = jpg
+        img = img.copy()
+        def _encode_and_store():
+            jpg = _encode_jpg(img, quality=quality)
+            with _state.lock:
+                _state.wrist_jpg = jpg
+        threading.Thread(target=_encode_and_store, daemon=True).start()
 
     def update_stats(
         self,

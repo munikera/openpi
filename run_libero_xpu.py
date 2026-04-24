@@ -335,8 +335,8 @@ class Args:
     seed: int = 7  # Random Seed (for reproducibility)
 
     # Web viewer: stream live simulation frames to http://localhost:<web_viewer_port>
-    # Set to 0 to disable.
-    web_viewer_port: int = 9000
+    # Default is 0 (disabled). Pass --args.web-viewer-port 9000 to enable.
+    web_viewer_port: int = 0
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────
