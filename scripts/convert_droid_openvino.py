@@ -413,21 +413,84 @@ def benchmark_ov(xml_path: Path, args: Args, rng: np.random.Generator):
     compiled   = core.compile_model(str(xml_path), device_name=args.ov_device, config=config)
     infer_req  = compiled.create_infer_request()
 
-    # Build dummy numpy inputs
-    B, num_cam, T_lang = 1, 2, 200
-    inputs_np = [
-        np.zeros((B, num_cam, 3, 224, 224), dtype=np.float32),  # images
-        np.ones ((B, num_cam),              dtype=np.float32),  # img_masks
-        np.zeros((B, T_lang),               dtype=np.int64),    # lang_tokens
-        np.ones ((B, T_lang),               dtype=np.float32),  # lang_masks
-        np.zeros((B, 8),                    dtype=np.float32),  # state
-        np.zeros((B, 15, 32),               dtype=np.float32),  # noise
-    ]
+    # Pre-build synthetic uint8 images — reused each iter, but preprocessing runs inside loop
+    # to match OVDroidPolicy.infer() cost exactly.
+    B = 1
+    _rng = np.random.default_rng(args.seed)
+    img_uint8   = _rng.integers(0, 256, (224, 224, 3), dtype=np.uint8)   # exterior_image
+    wrist_uint8 = _rng.integers(0, 256, (224, 224, 3), dtype=np.uint8)   # wrist_image
+    joint_pos   = _rng.random(7).astype(np.float32)
+    gripper_pos = _rng.random(1).astype(np.float32)
+    img_masks_np = np.array([[1.0, 1.0]], dtype=np.float32)              # [1, 2]
+
+    # Tokenizer — same object used in OVDroidPolicy (tokenization cost per call unless cached)
+    _dummy_prompt = "pick up the cup"
+    try:
+        from openpi.models.tokenizer import PaligemmaTokenizer as _PGT
+        _tokenizer = _PGT(max_len=200)
+        _token_cache: dict = {}
+        def _tokenize(prompt: str):
+            if prompt not in _token_cache:
+                tokens, masks = _tokenizer.tokenize(prompt)
+                _token_cache[prompt] = (
+                    tokens.astype(np.int64)[None],   # [1, 200]
+                    masks.astype(np.float32)[None],  # [1, 200]
+                )
+            return _token_cache[prompt]
+        print("  Tokenizer loaded — tokenization cost included in timing.")
+    except Exception as e:
+        _tokenizer = None
+        print(f"  WARNING: Could not load tokenizer ({e}); using pre-built zero tokens.")
+        _lang_tokens_np = np.zeros((B, 200), dtype=np.int64)
+        _lang_masks_np  = np.ones ((B, 200), dtype=np.float32)
+        def _tokenize(prompt: str):
+            return _lang_tokens_np, _lang_masks_np
+
+    # Image normalisation constants (same as OVDroidPolicy)
+    _IMG_MEAN = np.array([0.5, 0.5, 0.5], dtype=np.float32)
+    _IMG_STD  = np.array([0.5, 0.5, 0.5], dtype=np.float32)
+
+    def _preprocess_image(img: np.ndarray) -> np.ndarray:
+        """uint8 HWC → float32 CHW, normalised to [-1, 1]."""
+        x = img.astype(np.float32) / 255.0
+        x = (x - _IMG_MEAN) / _IMG_STD
+        return x.transpose(2, 0, 1)  # CHW
+
+    def _preprocess_and_infer():
+        """Mirrors OVDroidPolicy.infer() step-by-step."""
+        # ── Language tokens (cached by prompt, same as OVDroidPolicy) ────
+        lang_tokens_np, lang_masks_np = _tokenize(_dummy_prompt)
+
+        # ── Image preprocessing ───────────────────────────────────────────
+        base_chw  = _preprocess_image(img_uint8)
+        wrist_chw = _preprocess_image(wrist_uint8)
+        images = np.stack([base_chw, wrist_chw], axis=0)[None]  # [1,2,3,224,224]
+
+        # ── State ─────────────────────────────────────────────────────────
+        state = np.concatenate([joint_pos, gripper_pos])[None]  # [1,8]
+
+        # ── Diffusion noise (same as OVDroidPolicy) ───────────────────────
+        noise = np.random.randn(B, 15, 32).astype(np.float32)
+
+        # ── OV infer ──────────────────────────────────────────────────────
+        inputs = {
+            "images":      images,
+            "img_masks":   img_masks_np,
+            "lang_tokens": lang_tokens_np,
+            "lang_masks":  lang_masks_np,
+            "state":       state,
+            "noise":       noise,
+        }
+        infer_req.infer(inputs)
+
+        # ── Output copy + unnorm slice (same as OVDroidPolicy) ────────────
+        raw = infer_req.get_output_tensor(0).data  # [1,15,32]
+        _ = raw[0, :, :8].copy()                   # [15,8]
 
     # Warmup
     print(f"\nWarming up ({args.num_warmup} calls) ...")
     for _ in range(args.num_warmup):
-        infer_req.infer(inputs_np)
+        _preprocess_and_infer()
     print("Warmup done.\n")
 
     # Timed runs
@@ -435,7 +498,7 @@ def benchmark_ov(xml_path: Path, args: Args, rng: np.random.Generator):
     times = []
     for _ in range(args.num_iters):
         t0 = time.time()
-        infer_req.infer(inputs_np)
+        _preprocess_and_infer()
         times.append(time.time() - t0)
 
     ms = np.array(times) * 1000.0
@@ -504,6 +567,20 @@ def main(args: Args):
     fp16_xml   = Path(args.ov_fp16_dir) / "model.xml"
     active_xml = fp16_xml if args.compress_to_fp16 else fp32_xml
     val_dir    = Path(args.onnx_dir) / "validation"
+
+    # Warn if output dirs use the default names and num_steps != 10,
+    # so users know the 10-step model would be overwritten.
+    if args.num_steps != 10 and args.ov_fp32_dir == "profiler_output/droid_fp32":
+        suggested_fp32 = f"profiler_output/droid_fp32_steps{args.num_steps}"
+        suggested_fp16 = f"profiler_output/droid_fp16_steps{args.num_steps}"
+        suggested_onnx = f"profiler_output/droid_onnx_steps{args.num_steps}"
+        print(f"  ⚠ WARNING: --num-steps {args.num_steps} but output dirs still use the")
+        print(f"    default 10-step paths. This will OVERWRITE your existing 10-step model.")
+        print(f"    To keep both, re-run with:")
+        print(f"      --onnx-dir {suggested_onnx}")
+        print(f"      --ov-fp32-dir {suggested_fp32}")
+        print(f"      --ov-fp16-dir {suggested_fp16}")
+        print()
 
     print("=" * 60)
     print("DROID OpenVINO Conversion (Intel Three-Step)")

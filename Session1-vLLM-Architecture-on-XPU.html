@@ -1,0 +1,1218 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>vLLM Architecture on XPU</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap');
+
+  :root {
+    /* vLLM brand */
+    --vllm-blue: #30a2ff;
+    --vllm-blue-dark: #1a7fd4;
+    --vllm-blue-light: #e8f4ff;
+    --vllm-blue-10: rgba(48, 162, 255, 0.10);
+    --vllm-blue-20: rgba(48, 162, 255, 0.20);
+    --vllm-yellow: #fdb517;
+    --vllm-yellow-hover: #e5a315;
+    --vllm-yellow-light: #fef8e7;
+
+    /* Light theme from vllm.ai */
+    --bg: #ffffff;
+    --bg-secondary: #f8f9fb;
+    --surface: #ffffff;
+    --surface-muted: #f3f5f8;
+    --text: #1a1f36;
+    --text-secondary: #6b7394;
+    --text-dim: #8f96b3;
+    --border: #e5e8f0;
+    --border-light: #eef1f6;
+
+    /* Semantic */
+    --green: #00c758;
+    --green-bg: #edfcf2;
+    --green-text: #0a7c3e;
+    --yellow-status: #f59e0b;
+    --yellow-bg: #fef9ec;
+    --yellow-text: #92600a;
+    --orange: #f97316;
+    --orange-bg: #fff4ec;
+    --orange-text: #9a3c12;
+    --gray-badge-bg: #f0f1f5;
+    --gray-badge-text: #6b7394;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    overflow: hidden;
+    height: 100vh;
+    width: 100vw;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* Slide container */
+  .deck { position: relative; width: 100vw; height: 100vh; }
+
+  .slide {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    padding: 56px 80px 64px;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.35s ease;
+    background: var(--bg);
+  }
+  .slide.active { opacity: 1; pointer-events: auto; }
+
+  /* Typography */
+  h1 { font-size: 2.8rem; font-weight: 800; letter-spacing: -0.03em; color: var(--text); margin-bottom: 8px; line-height: 1.15; }
+  h2 {
+    font-size: 1.75rem;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    margin-bottom: 28px;
+    color: var(--text);
+    padding-bottom: 12px;
+    border-bottom: 2px solid var(--vllm-blue);
+    display: inline-block;
+  }
+  h3 { font-size: 1.15rem; font-weight: 600; margin-bottom: 12px; color: var(--text); }
+  p, li { font-size: 1.05rem; line-height: 1.7; color: var(--text-secondary); }
+  li { margin-bottom: 5px; }
+  ul { padding-left: 22px; }
+  li::marker { color: var(--vllm-blue); }
+  strong { color: var(--text); font-weight: 600; }
+  a { color: var(--vllm-blue); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code, .mono {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.9em;
+    background: var(--surface-muted);
+    padding: 1px 6px;
+    border-radius: 4px;
+    color: var(--text);
+  }
+
+  /* Tables */
+  table { width: 100%; border-collapse: collapse; font-size: 0.92rem; }
+  th {
+    text-align: left;
+    padding: 10px 14px;
+    background: var(--text);
+    color: #fff;
+    font-weight: 600;
+    font-size: 0.8rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+  }
+  th:first-child { border-radius: 8px 0 0 0; }
+  th:last-child { border-radius: 0 8px 0 0; }
+  td {
+    padding: 9px 14px;
+    border-bottom: 1px solid var(--border-light);
+    vertical-align: top;
+    color: var(--text-secondary);
+  }
+  td.bold, td strong { color: var(--text); }
+  tr:nth-child(even) td { background: var(--bg-secondary); }
+  tr:last-child td { border-bottom: none; }
+  tr:last-child td:first-child { border-radius: 0 0 0 8px; }
+  tr:last-child td:last-child { border-radius: 0 0 8px 0; }
+  table { border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+
+  /* Badges */
+  .badge {
+    display: inline-block;
+    padding: 3px 10px;
+    border-radius: 20px;
+    font-size: 0.76rem;
+    font-weight: 600;
+    white-space: nowrap;
+    letter-spacing: 0.01em;
+  }
+  .badge-green { background: var(--green-bg); color: var(--green-text); }
+  .badge-yellow { background: var(--yellow-bg); color: var(--yellow-text); }
+  .badge-orange { background: var(--orange-bg); color: var(--orange-text); }
+  .badge-blue { background: var(--vllm-blue-light); color: var(--vllm-blue-dark); }
+  .badge-dim { background: var(--gray-badge-bg); color: var(--gray-badge-text); }
+
+  /* Cards */
+  .card {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 20px 24px;
+    margin-bottom: 14px;
+    transition: box-shadow 0.2s;
+  }
+  .card:hover { box-shadow: 0 2px 12px rgba(0,0,0,0.06); }
+  .card-accent { border-left: 3px solid var(--vllm-blue); }
+  .card-filled {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-light);
+  }
+
+  /* Layouts */
+  .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
+  .grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 20px; }
+  .flex-grow { flex: 1; overflow: auto; }
+  .mt-12 { margin-top: 12px; }
+  .mt-16 { margin-top: 16px; }
+  .mt-20 { margin-top: 20px; }
+  .mt-24 { margin-top: 24px; }
+  .mb-4 { margin-bottom: 4px; }
+  .mb-8 { margin-bottom: 8px; }
+  .mb-12 { margin-bottom: 12px; }
+  .mb-16 { margin-bottom: 16px; }
+  .text-sm { font-size: 0.88rem; }
+  .text-xs { font-size: 0.78rem; }
+  .text-dim { color: var(--text-dim); }
+  .text-secondary { color: var(--text-secondary); }
+  .text-blue { color: var(--vllm-blue); }
+  .text-center { text-align: center; }
+  .bold { font-weight: 600; color: var(--text); }
+
+  /* Stack diagram */
+  .stack-layer {
+    padding: 13px 24px;
+    text-align: center;
+    font-weight: 600;
+    font-size: 0.92rem;
+    border-radius: 8px;
+    margin-bottom: 6px;
+  }
+
+  /* Flow diagram */
+  .flow-step {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 10px 18px;
+    text-align: center;
+    font-weight: 500;
+    font-size: 0.95rem;
+    color: var(--text-secondary);
+  }
+  .flow-arrow {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--vllm-blue);
+    font-size: 1rem;
+    padding: 1px 0;
+    line-height: 1;
+  }
+
+  /* Kernel chips */
+  .kernel-chip {
+    background: var(--surface-muted);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 4px 10px;
+    font-size: 0.78rem;
+    font-weight: 600;
+    display: inline-block;
+    margin: 2px;
+    color: var(--text-secondary);
+  }
+  .kernel-chip-blue {
+    background: var(--vllm-blue-light);
+    border-color: var(--vllm-blue-20);
+    color: var(--vllm-blue-dark);
+  }
+
+  /* Nav bar */
+  .nav-bar {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    height: 48px;
+    background: var(--bg);
+    border-top: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 24px;
+    z-index: 100;
+    font-size: 0.85rem;
+    color: var(--text-dim);
+  }
+  .nav-bar button {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 6px 16px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 0.82rem;
+    font-family: inherit;
+    font-weight: 500;
+    transition: all 0.15s;
+  }
+  .nav-bar button:hover {
+    background: var(--surface-muted);
+    border-color: var(--vllm-blue);
+    color: var(--vllm-blue);
+  }
+  .progress-track {
+    flex: 1;
+    height: 3px;
+    background: var(--border-light);
+    margin: 0 20px;
+    border-radius: 2px;
+    overflow: hidden;
+  }
+  .progress-fill {
+    height: 100%;
+    background: var(--vllm-blue);
+    transition: width 0.3s ease;
+    border-radius: 2px;
+  }
+
+
+  /* ====== Title slide ====== */
+  .title-slide {
+    justify-content: center;
+    align-items: center;
+    text-align: center;
+    background: linear-gradient(180deg, #f8f9fb 0%, #ffffff 50%);
+  }
+  .title-slide h1 {
+    font-size: 3.4rem;
+    font-weight: 800;
+    color: var(--text);
+    letter-spacing: -0.03em;
+  }
+  .title-slide .blue-text {
+    color: var(--vllm-blue);
+  }
+  .title-slide .subtitle {
+    margin-top: 14px;
+    font-size: 1.25rem;
+    color: var(--text-secondary);
+    font-weight: 400;
+  }
+  .title-slide .author {
+    margin-top: 48px;
+    font-size: 1rem;
+    color: var(--text-dim);
+    font-weight: 500;
+  }
+  .title-slide .series-tag {
+    font-size: 0.82rem;
+    color: var(--vllm-blue);
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    font-weight: 600;
+    margin-bottom: 16px;
+    padding: 6px 18px;
+    background: var(--vllm-blue-10);
+    border-radius: 20px;
+    display: inline-block;
+  }
+  .title-slide .yellow-bar {
+    width: 60px;
+    height: 4px;
+    background: var(--vllm-yellow);
+    border-radius: 2px;
+    margin: 20px auto 0;
+  }
+
+  /* ====== End slide ====== */
+  .end-slide {
+    justify-content: center;
+    align-items: center;
+    text-align: center;
+    background: linear-gradient(180deg, #f8f9fb 0%, #ffffff 50%);
+  }
+  .end-slide h1 { font-size: 3rem; color: var(--text); margin-bottom: 12px; }
+  .end-slide p { font-size: 1.2rem; color: var(--text-dim); }
+  .end-slide .yellow-bar {
+    width: 60px;
+    height: 4px;
+    background: var(--vllm-yellow);
+    border-radius: 2px;
+    margin: 24px auto 0;
+  }
+
+  /* ====== Highlighted row ====== */
+  .hl-row td { background: var(--vllm-blue-10) !important; }
+
+  /* Dense tables */
+  .dense-table td, .dense-table th { padding: 7px 10px; font-size: 0.85rem; }
+
+  /* Comm stack */
+  .comm-stack {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0;
+  }
+  .comm-stack .stack-layer { width: 300px; margin-bottom: 0; }
+  .comm-arrow {
+    color: var(--vllm-blue);
+    font-size: 0.9rem;
+    line-height: 1.4;
+  }
+
+  /* Sidebar */
+  .sidebar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 260px;
+    height: calc(100vh - 48px);
+    background: var(--bg);
+    border-right: 1px solid var(--border);
+    z-index: 200;
+    padding: 16px 0;
+    overflow-y: auto;
+    transform: translateX(-260px);
+    transition: transform 0.25s ease;
+  }
+  .sidebar.open { transform: translateX(0); }
+  .sidebar-title {
+    font-size: 0.72rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--text-dim);
+    padding: 0 20px;
+    margin-bottom: 12px;
+  }
+  .sidebar-item {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    padding: 8px 20px;
+    cursor: pointer;
+    font-size: 0.82rem;
+    color: var(--text-secondary);
+    transition: all 0.15s;
+    border-left: 3px solid transparent;
+  }
+  .sidebar-item:hover {
+    background: var(--surface-muted);
+    color: var(--text);
+  }
+  .sidebar-item.active {
+    background: var(--vllm-blue-10);
+    color: var(--vllm-blue-dark);
+    border-left-color: var(--vllm-blue);
+    font-weight: 600;
+  }
+  .sidebar-item .num {
+    font-size: 0.72rem;
+    font-weight: 600;
+    color: var(--text-dim);
+    min-width: 18px;
+  }
+  .sidebar-item.active .num { color: var(--vllm-blue); }
+  .sidebar-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.15);
+    z-index: 190;
+    display: none;
+  }
+  .sidebar-overlay.open { display: block; }
+
+  /* Scrollbar */
+  ::-webkit-scrollbar { width: 5px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+  /* Print / PDF export */
+  @media print {
+    body { overflow: visible; height: auto; width: auto; }
+    .deck { position: static; width: auto; height: auto; }
+    .slide {
+      position: static !important;
+      opacity: 1 !important;
+      pointer-events: auto !important;
+      display: flex !important;
+      page-break-after: always;
+      page-break-inside: avoid;
+      height: 100vh;
+      width: 100vw;
+      padding: 40px 60px 48px;
+      border: none;
+    }
+    .slide:last-child { page-break-after: auto; }
+    .nav-bar, .sidebar, .sidebar-overlay { display: none !important; }
+    .badge { border: 1px solid currentColor; }
+    @page { size: landscape; margin: 0; }
+  }
+</style>
+</head>
+<body>
+
+<div class="deck" id="deck">
+
+  <!-- ============ SLIDE 1: Title ============ -->
+  <div class="slide title-slide active">
+    <div class="series-tag">vLLM Technical Sharing Series &mdash; Session 1</div>
+    <h1>vLLM Architecture on <span class="blue-text">XPU</span></h1>
+    <div class="subtitle">Software Stack, Execution Mode, Kernels, and End-to-End Walkthrough</div>
+    <div class="yellow-bar"></div>
+    <div class="author">Xinyu Chen &nbsp;&middot;&nbsp; Kunshang Ji &nbsp;&middot;&nbsp; Chendi Xue</div>
+  </div>
+
+  <!-- ============ SLIDE 2: Agenda ============ -->
+  <div class="slide">
+    <h2>Agenda</h2>
+    <div class="flex-grow" style="display:flex; align-items:center;">
+      <div style="display:grid; grid-template-columns:auto 1fr; gap:10px 28px; font-size:1.1rem; width:100%; max-width:680px;">
+        <span class="bold" style="font-size:1.4rem; color:var(--vllm-blue);">01</span><span class="bold">GPU Software Stack</span>
+        <span class="bold" style="font-size:1.4rem; color:var(--vllm-blue);">02</span><span class="bold">vLLM Internal Architecture</span>
+        <span class="bold" style="font-size:1.4rem; color:var(--vllm-blue);">03</span><span class="bold">Execution Modes on XPU</span>
+        <span class="bold" style="font-size:1.4rem; color:var(--vllm-blue);">04</span><span class="bold">Model Parallelism &amp; Communication</span>
+        <span class="bold" style="font-size:1.4rem; color:var(--vllm-blue);">05</span><span class="bold">Workload View</span>
+        <span class="bold" style="font-size:1.4rem; color:var(--vllm-blue);">06</span><span class="bold">Attention Backend</span>
+        <span class="bold" style="font-size:1.4rem; color:var(--vllm-blue);">07</span><span class="bold">vLLM XPU Kernels</span>
+        <span class="bold" style="font-size:1.4rem; color:var(--vllm-blue);">08</span><span class="bold">Features Status</span>
+        <span class="bold" style="font-size:1.4rem; color:var(--vllm-blue);">09</span><span class="bold">End-to-End Walkthrough</span>
+        <span class="bold" style="font-size:1.4rem; color:var(--vllm-blue);">10</span><span class="bold">Q&amp;A</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ SLIDE 3: GPU Software Stack ============ -->
+  <div class="slide">
+    <h2>GPU Software Stack</h2>
+    <div class="grid-2 flex-grow">
+      <div style="display:flex; flex-direction:column; justify-content:center; gap:6px;">
+        <div class="stack-layer" style="background:var(--vllm-blue); color:#fff;">
+          vLLM (Serving Engine)
+        </div>
+        <div class="stack-layer" style="background:var(--vllm-blue-light); color:var(--vllm-blue-dark); border:1px solid var(--vllm-blue-20);">
+          vLLM XPU Kernels &nbsp;&nbsp;|&nbsp;&nbsp; Triton XPU
+        </div>
+        <div class="stack-layer" style="background:var(--surface-muted); color:var(--text); border:1px solid var(--border);">
+          PyTorch
+        </div>
+        <div class="stack-layer" style="background:var(--surface-muted); color:var(--text-secondary); border:1px solid var(--border);">
+          SYCL / DPC++ Runtime
+        </div>
+        <div class="stack-layer" style="background:var(--bg-secondary); color:var(--text-dim); border:1px solid var(--border-light);">
+          Level Zero &nbsp;&nbsp;|&nbsp;&nbsp; GPU Driver
+        </div>
+        <div class="stack-layer" style="background:var(--text); color:#fff;">
+          Intel XPU Hardware (Xe / Xe2 / Xe3)
+        </div>
+      </div>
+      <div>
+        <h3>Key Points</h3>
+        <ul>
+          <li>vLLM builds upon <strong>PyTorch</strong> &mdash; XPU support is fully upstream in PyTorch</li>
+          <li><strong>vLLM XPU Kernels</strong> provide performance-critical ops &mdash; attention, MoE, normalization</li>
+          <li><strong>Triton XPU</strong> enables Triton kernels on XPU out-of-box for broad workload coverage</li>
+          <li>vLLM extends PyTorch with <strong>custom op registration</strong> for serving performance</li>
+          <li>Validated with <strong>Intel DLE 2025.3</strong> on Intel Arc Pro Graphics</li>
+        </ul>
+        <h3 class="mt-16">Installation</h3>
+        <div style="display:flex; gap:10px; margin-top:8px;">
+          <div class="card card-filled" style="flex:1; padding:12px 14px;">
+            <div class="bold mb-4" style="font-size:0.85rem;"><span style="color:var(--vllm-blue);">&#x1F433;</span> Docker</div>
+            <div style="font-family:'JetBrains Mono',monospace; font-size:0.7rem; line-height:1.7; color:var(--text-secondary);">
+              docker build -f<br>
+              &nbsp;&nbsp;docker/Dockerfile.xpu<br>
+              &nbsp;&nbsp;-t vllm-xpu .
+            </div>
+            <p class="text-xs text-dim" style="margin-top:6px;">Full stack pre-configured:<br>UMD + SYCL compiler + PyTorch + Triton<br>Good for K8s &amp; version control</p>
+          </div>
+          <div class="card card-filled" style="flex:1; padding:12px 14px;">
+            <div class="bold mb-4" style="font-size:0.85rem;"><span style="color:var(--vllm-blue);">&#x1F4E6;</span> Bare Metal (from source)</div>
+            <div style="font-family:'JetBrains Mono',monospace; font-size:0.68rem; line-height:1.7; color:var(--text-secondary);">
+              git clone https://github.com/<br>&nbsp;&nbsp;vllm-project/vllm.git<br>
+              cd vllm &amp;&amp; pip install -e .
+            </div>
+            <p class="text-xs text-dim" style="margin-top:6px;">Auto-detects XPU, installs PyTorch +<br>SYCL runtime. Requires UMD only.<br>Easier to integrate with other services<br><span class="badge badge-yellow" style="font-size:0.62rem;">Pre-built wheel WIP</span></p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ SLIDE 4: vLLM Internal Architecture ============ -->
+  <div class="slide">
+    <h2>vLLM Internal Architecture</h2>
+    <p class="mb-16" style="color:var(--text-secondary);"><strong>XPU is an in-tree device</strong> in vLLM &mdash; supported directly in the upstream repository, not a plugin or fork. It shares the same worker, model runner, model definitions, and op interfaces as CUDA and AMD. The key difference across platforms is the <strong>kernel provider</strong> layer.</p>
+    <div class="flex-grow">
+      <div style="display:flex; flex-direction:column; gap:6px; margin-bottom:20px;">
+        <div style="background:var(--surface-muted); border:1px solid var(--border); border-radius:8px; padding:11px 20px; text-align:center; font-weight:600; color:var(--text);">
+          LLM Engine &amp; Scheduler
+        </div>
+        <div style="background:var(--surface-muted); border:1px solid var(--border); border-radius:8px; padding:11px 20px; text-align:center; font-weight:600; color:var(--text);">
+          Worker &amp; Model Runner <span class="text-xs text-dim">&mdash; shared across CUDA, AMD, XPU</span>
+        </div>
+        <div style="background:var(--surface-muted); border:1px solid var(--border); border-radius:8px; padding:11px 20px; text-align:center; font-weight:600; color:var(--text);">
+          Models &nbsp;(Qwen &nbsp;|&nbsp; Llama &nbsp;|&nbsp; DeepSeek &nbsp;|&nbsp; ...) <span class="text-xs text-dim">&mdash; single model definition, all platforms</span>
+        </div>
+        <div style="background:var(--surface-muted); border:1px solid var(--border); border-radius:8px; padding:11px 20px; text-align:center; font-weight:600; color:var(--text);">
+          Ops &nbsp;(Attention &nbsp;|&nbsp; MoE &nbsp;|&nbsp; Linear &nbsp;|&nbsp; RMSNorm &nbsp;|&nbsp; ...) <span class="text-xs text-dim">&mdash; common op interface</span>
+        </div>
+        <div style="display:grid; grid-template-columns:1fr 1fr 1fr 1fr; gap:6px;">
+          <div style="background:var(--vllm-blue-light); border:2px solid var(--vllm-blue); border-radius:8px; padding:10px; text-align:center;">
+            <div class="bold mb-4" style="color:var(--vllm-blue);">XPU</div>
+            <span class="kernel-chip kernel-chip-blue">vllm-xpu-kernels <span style="font-weight:700; color:var(--vllm-blue);">(SYCL/SYCLTLA)</span></span>
+            <span class="kernel-chip kernel-chip-blue">Triton XPU</span>
+            <span class="kernel-chip kernel-chip-blue">Torch</span>
+            <span class="kernel-chip kernel-chip-blue">Inductor</span>
+          </div>
+          <div style="background:var(--bg-secondary); border:1px solid var(--border); border-radius:8px; padding:10px; text-align:center;">
+            <div class="bold mb-4 text-dim">NVIDIA</div>
+            <span class="kernel-chip">FlashInfer</span>
+            <span class="kernel-chip">FlashAttn</span>
+            <span class="kernel-chip">DeepEP</span>
+            <span class="kernel-chip">DeepGEMM</span>
+            <span class="kernel-chip">CUTLASS</span>
+            <span class="kernel-chip">CUDA</span>
+            <span class="kernel-chip">Triton</span>
+          </div>
+          <div style="background:var(--bg-secondary); border:1px solid var(--border); border-radius:8px; padding:10px; text-align:center;">
+            <div class="bold mb-4 text-dim">AMD</div>
+            <span class="kernel-chip">AITER</span>
+            <span class="kernel-chip">CUDA</span>
+            <span class="kernel-chip">Triton</span>
+          </div>
+          <div style="background:var(--bg-secondary); border:1px solid var(--border); border-radius:8px; padding:10px; text-align:center;">
+            <div class="bold mb-4 text-dim">Native</div>
+            <span class="kernel-chip">Torch Ops</span>
+            <span class="kernel-chip">Inductor</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+
+
+  <!-- ============ SLIDE 5: Execution Modes ============ -->
+  <div class="slide">
+    <h2>Execution Modes on XPU</h2>
+    <p class="mb-16" style="color:var(--text-secondary);">Three execution modes &mdash; CUDA uses <strong>Compile + CUDAGraph by default</strong>. XPU is working towards Compile as the default path.</p>
+    <table>
+      <thead>
+        <tr>
+          <th>Mode</th>
+          <th>How It Works</th>
+          <th>Pros</th>
+          <th>Cons</th>
+          <th>XPU Status</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td class="bold">Eager</td>
+          <td>Ops dispatched one-by-one at runtime</td>
+          <td>Always works, easy to debug</td>
+          <td>Launch overhead per op, no fusion</td>
+          <td><span class="badge badge-green">Default, Production</span></td>
+        </tr>
+        <tr>
+          <td class="bold">Compile</td>
+          <td><code>torch.compile</code> traces &amp; fuses ops via TorchInductor</td>
+          <td>Automatic op fusion, reduced overhead, Inductor handles new op patterns seamlessly</td>
+          <td>Startup compilation warmup</td>
+          <td><span class="badge badge-yellow">Towards Default</span></td>
+        </tr>
+        <tr>
+          <td class="bold">XPU Graph</td>
+          <td>Capture and replay execution graphs (full graph or piecewise with compile)</td>
+          <td>Lowest latency, minimal launch overhead</td>
+          <td>Static shapes only, higher memory</td>
+          <td><span class="badge badge-orange">Experimental</span></td>
+        </tr>
+      </tbody>
+    </table>
+    <div class="grid-2 mt-24">
+    <div class="card card-accent" style="max-width:760px;">
+      <p style="color:var(--text-secondary); margin:0;"><strong>Direction:</strong> Move XPU to <strong>Compile by default</strong>, matching CUDA parity. Under compile, prefer torch-native ops so Inductor can fuse and optimize them automatically. Also enabling vLLM built-in fusion passes (e.g., Async TP, quantization fusions) on XPU &mdash; these are general LLM workload patterns already defined in vLLM.</p>
+    </div>
+    <div class="card card-filled">
+      <p style="color:var(--text-secondary); margin:0;"><strong>XPU Graph note:</strong> Experimental in vLLM. Currently supports <strong>single card only</strong> with <strong>piecewise compilation</strong>. Full graph capture and multi-card support expected in <strong>DLE 2026</strong>. Performance will depend on L0 native graph maturity.</p>
+    </div>
+    </div>
+  </div>
+
+  <!-- ============ SLIDE 6: Model Parallelism & Communication ============ -->
+  <div class="slide">
+    <h2>Model Parallelism &amp; Communication</h2>
+    <div class="grid-2 flex-grow">
+      <div>
+        <table class="dense-table">
+          <thead>
+            <tr><th>Strategy</th><th>What It Does</th><th>Comm Ops</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td class="bold">Tensor Parallel (TP)</td>
+              <td>Splits weight tensors across GPUs</td>
+              <td>AllReduce</td>
+            </tr>
+            <tr>
+              <td class="bold">Pipeline Parallel (PP)</td>
+              <td>Splits model layers across GPUs</td>
+              <td>Send / Recv</td>
+            </tr>
+            <tr>
+              <td class="bold">Expert Parallel (EP)</td>
+              <td>Distributes MoE experts across GPUs</td>
+              <td>All-to-All (Dispatch / Combine)</td>
+            </tr>
+            <tr>
+              <td class="bold">Data Parallel (DP)</td>
+              <td>Replicates model, splits requests. Common for MLA workloads &mdash; no KV cache duplication. Typically combined as DP&times;TP with EP to increase concurrency</td>
+              <td>&mdash;</td>
+            </tr>
+          </tbody>
+        </table>
+        <div class="card card-accent mt-16">
+          <p class="text-sm" style="color:var(--text-secondary); margin:0;"><strong>TP</strong> is the most common &mdash; used in nearly all multi-GPU serving deployments (TP4, TP8). <strong>EP</strong> is critical for large MoE models; DeepEP-equivalent support is planned.</p>
+        </div>
+      </div>
+      <div style="display:flex; flex-direction:column; align-items:center; justify-content:center;">
+        <h3 class="mb-16">Communication Stack on XPU</h3>
+        <!-- Two-path diagram -->
+        <div style="display:flex; flex-direction:column; align-items:center; gap:0;">
+          <div class="stack-layer" style="background:var(--vllm-blue); color:#fff; width:380px; margin-bottom:4px;">
+            XpuCommunicator
+          </div>
+          <div style="display:flex; gap:6px; width:520px; margin-top:4px;">
+            <!-- Path 1: torch.distributed -->
+            <div style="flex:1; display:flex; flex-direction:column; align-items:center; gap:3px;">
+              <div class="comm-arrow">&#x25BC;</div>
+              <div class="stack-layer" style="background:var(--vllm-blue-light); color:var(--vllm-blue-dark); border:1px solid var(--vllm-blue-20); width:100%; margin-bottom:0; font-size:0.72rem; padding:8px 4px;">
+                torch.distributed<br>(XCCL)
+              </div>
+              <div class="comm-arrow">&#x25BC;</div>
+              <div class="stack-layer" style="background:var(--surface-muted); color:var(--text); border:1px solid var(--border); width:100%; margin-bottom:0; font-size:0.72rem; padding:8px 4px;">
+                oneCCL
+              </div>
+              <div class="text-xs text-dim" style="margin-top:4px;">Default</div>
+            </div>
+            <!-- Path 2: torch SymmMem -->
+            <div style="flex:1; display:flex; flex-direction:column; align-items:center; gap:3px;">
+              <div class="comm-arrow">&#x25BC;</div>
+              <div class="stack-layer" style="background:var(--green-bg); color:var(--green-text); border:1px solid rgba(0,199,88,0.3); width:100%; margin-bottom:0; font-size:0.72rem; padding:8px 4px;">
+                torch.ops<br>.symm_mem
+              </div>
+              <div class="text-xs" style="margin-top:4px;"><span class="badge badge-blue" style="font-size:0.68rem;">Planned</span></div>
+            </div>
+            <!-- Path 3: Custom comm ops -->
+            <div style="flex:1; display:flex; flex-direction:column; align-items:center; gap:3px;">
+              <div class="comm-arrow">&#x25BC;</div>
+              <div class="stack-layer" style="background:var(--vllm-yellow-light); color:var(--vllm-yellow-hover); border:1px solid rgba(253,181,23,0.3); width:100%; margin-bottom:0; font-size:0.72rem; padding:8px 4px;">
+                Custom<br>Comm Ops
+              </div>
+              <div class="text-xs" style="margin-top:4px;"><span class="badge badge-blue" style="font-size:0.68rem;">Planned</span></div>
+            </div>
+            <!-- Path 4: DeepEP -->
+            <div style="flex:1; display:flex; flex-direction:column; align-items:center; gap:3px;">
+              <div class="comm-arrow">&#x25BC;</div>
+              <div class="stack-layer" style="background:var(--orange-bg); color:var(--orange-text); border:1px solid rgba(249,115,22,0.3); width:100%; margin-bottom:0; font-size:0.72rem; padding:8px 4px;">
+                DeepEP<br>(Dispatch/Combine)
+              </div>
+              <div class="text-xs" style="margin-top:4px;"><span class="badge badge-blue" style="font-size:0.68rem;">Planned</span></div>
+            </div>
+          </div>
+        </div>
+        <p class="text-xs text-dim mt-12">Analogous to CUDA: NCCL (default) vs SymmMem / Custom AllReduce / DeepEP</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ SLIDE 7: Workload View ============ -->
+  <div class="slide">
+    <h2>Workload View</h2>
+    <p class="mb-12" style="color:var(--text-secondary);">Models are categorized by <strong>FFN type</strong> and <strong>Attention type</strong> &mdash; each combination maps to different kernel paths on XPU:</p>
+    <table class="dense-table">
+      <thead>
+        <tr>
+          <th>FFN</th>
+          <th>Attention Type</th>
+          <th>Representative Models</th>
+          <th>Attention Backend</th>
+          <th>FFN Kernel</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr class="hl-row">
+          <td rowspan="2" class="bold" style="vertical-align:middle;">Dense</td>
+          <td class="bold">MHA / MQA / GQA</td>
+          <td>Llama-2/3, Qwen2.5/3, Yi, GLM-4, Mistral, Gemma4</td>
+          <td><span class="badge badge-blue">FLASH_ATTN</span> / <span class="badge badge-dim">TRITON_ATTN</span></td>
+          <td rowspan="2" style="vertical-align:middle;"><span class="badge badge-dim">PyTorch Linear</span><br><span class="text-xs text-dim"><code>_scaled_mm</code> for FP8/MXFP</span></td>
+        </tr>
+        <tr>
+          <td class="bold">GDN (Hybrid)</td>
+          <td>Qwen3.5</td>
+          <td><span class="badge badge-blue">GDN_ATTN</span></td>
+        </tr>
+        <tr>
+          <td rowspan="3" class="bold" style="vertical-align:middle;">Sparse (MoE)</td>
+          <td class="bold">MHA / MQA / GQA</td>
+          <td>Qwen3-30B-A3B, InternVL3.5-30B-A3B, GPT-OSS, Mixtral, Gemma4-26B-A4B</td>
+          <td><span class="badge badge-blue">FLASH_ATTN</span> / <span class="badge badge-dim">TRITON_ATTN</span></td>
+          <td rowspan="3" style="vertical-align:middle;"><span class="badge badge-blue">Grouped GEMM</span><br><span class="text-xs text-dim">SYCLTLA persistent</span></td>
+        </tr>
+        <tr>
+          <td class="bold">MLA</td>
+          <td>DeepSeek-V2/V3, GLM-5, Kimi-VL</td>
+          <td><span class="badge badge-blue">FLASH_ATTN</span> / <span class="badge badge-blue">XPU_MLA_SPARSE</span> / <span class="badge badge-dim">TRITON_MLA</span></td>
+        </tr>
+        <tr>
+          <td class="bold">GDN (Hybrid)</td>
+          <td>Qwen3.5-MoE</td>
+          <td><span class="badge badge-blue">GDN_ATTN</span></td>
+        </tr>
+      </tbody>
+    </table>
+    <div class="card card-filled mt-16" style="max-width:760px;">
+      <h3>Common Ops (all models)</h3>
+      <p class="text-sm">Embedding, RMSNorm, RoPE, Add &rarr; <strong>vllm-xpu-kernels</strong> (SYCL) in eager mode. Under compile mode, these ops can be unwrapped and lowered to <strong>Inductor</strong> for automatic fusion.</p>
+    </div>
+  </div>
+
+
+
+  <!-- ============ SLIDE 8: Attention Backend ============ -->
+  <div class="slide">
+    <h2>Attention Backend on XPU</h2>
+    <table class="dense-table">
+      <thead>
+        <tr>
+          <th>Backend</th>
+          <th>Kernel Impl</th>
+          <th>Q Dtypes</th>
+          <th>KV Dtypes</th>
+          <th>KV Layout</th>
+          <th>Block Size</th>
+          <th>Attn Type</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr class="hl-row">
+          <td class="bold">FLASH_ATTN</td>
+          <td>SYCLTLA</td>
+          <td>fp16, bf16</td>
+          <td>fp16, bf16, fp8</td>
+          <td>NHD / HND</td>
+          <td>64, 128</td>
+          <td>Decoder / Encoder</td>
+        </tr>
+        <tr>
+          <td class="bold">TRITON_ATTN</td>
+          <td>Triton</td>
+          <td>fp16, bf16, fp32</td>
+          <td>fp16, bf16, fp8</td>
+          <td>NHD / HND</td>
+          <td>64</td>
+          <td>Decoder / Encoder</td>
+        </tr>
+        <tr>
+          <td class="bold">TRITON_MLA</td>
+          <td>Triton</td>
+          <td>fp16, bf16</td>
+          <td>bf16</td>
+          <td>ND</td>
+          <td>Any</td>
+          <td>Decoder</td>
+        </tr>
+        <tr>
+          <td class="bold">XPU_MLA_SPARSE</td>
+          <td>Triton + SYCLTLA</td>
+          <td>fp16, bf16</td>
+          <td>bf16, fp16</td>
+          <td>ND</td>
+          <td>64, 128</td>
+          <td>Decoder</td>
+        </tr>
+        <tr>
+          <td class="bold">GDN_ATTN</td>
+          <td>SYCL + SYCLTLA</td>
+          <td>fp16, bf16</td>
+          <td>fp16, bf16</td>
+          <td>HD</td>
+          <td>64, 128</td>
+          <td>Decoder</td>
+        </tr>
+      </tbody>
+    </table>
+    <div class="grid-2 mt-20">
+      <div>
+        <h3>When to use which</h3>
+        <ul class="text-sm">
+          <li><strong>FLASH_ATTN</strong> &mdash; Default backend, well optimized on XPU with SYCLTLA</li>
+          <li><strong>TRITON_ATTN / MLA</strong> &mdash; Broader coverage (e.g., head_size=512, MLA)</li>
+          <li><strong>GDN_ATTN</strong> &mdash; GatedDeltaNet (Qwen3.5, Qwen Next)</li>
+          <li><strong>XPU_MLA_SPARSE</strong> &mdash; Sparse MLA (DeepSeek V3.2, GLM-5)</li>
+        </ul>
+      </div>
+      <div class="card card-accent">
+        <p class="text-sm" style="color:var(--text-secondary); margin:0;"><strong>FLASH_ATTN</strong> is the default attention backend on XPU, aligned with FlashAttention v2/v3 API. Well optimized with SYCLTLA-based chunked prefill and decode-only kernels for high-performance execution.</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ SLIDE 9: vLLM XPU Kernels ============ -->
+  <div class="slide">
+    <h2>vLLM XPU Kernels</h2>
+    <p class="mb-16"><a href="https://github.com/vllm-project/vllm-xpu-kernels">github.com/vllm-project/vllm-xpu-kernels</a> &mdash; Performance-critical kernels implemented in <strong>SYCL</strong> and <strong>SYCLTLA</strong></p>
+    <div class="grid-2">
+      <div>
+        <table class="dense-table">
+          <thead><tr><th>Category</th><th>Operations</th></tr></thead>
+          <tbody>
+            <tr><td class="bold">Normalization</td><td>RMS norm, fused add-RMS norm, layer norm</td></tr>
+            <tr><td class="bold">Activation</td><td>SiLU-and-mul, GeLU variants, SwigluOAI</td></tr>
+            <tr><td class="bold">Attention</td><td>Flash attention (variable-length), GDN attn, Xe2 variants</td></tr>
+            <tr><td class="bold">Positional</td><td>Rotary embedding (NeoX / GPT-J), DeepSeek RoPE</td></tr>
+            <tr><td class="bold">MoE</td><td>TopK scoring, grouped TopK, align/gather, remapping</td></tr>
+            <tr><td class="bold">Quantization</td><td>FP8, MxFP4 quantization &amp; GEMM</td></tr>
+            <tr><td class="bold">GEMM</td><td>Grouped GEMM</td></tr>
+            <tr><td class="bold">LoRA</td><td>LoRA operator support</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div>
+        <div class="card card-filled mb-12">
+          <h3>Architecture Support</h3>
+          <div style="display:flex; gap:10px; margin-bottom:10px; flex-wrap:wrap;">
+            <span class="badge badge-green">Xe &mdash; Available</span>
+            <span class="badge badge-green">Xe2 &mdash; Available</span>
+            <span class="badge badge-blue">Xe3 / Xe4 &mdash; Planned</span>
+          </div>
+          <p class="text-sm text-dim">AOT compilation enabled for Xe/Xe2 to reduce runtime overhead.</p>
+        </div>
+        <div class="card card-filled">
+          <h3>Integration</h3>
+          <ul class="text-sm">
+            <li>Compatible with <strong>Intel DLE 2025.3</strong> + <strong>PyTorch 2.10</strong></li>
+            <li>PyTorch 2.11 support in progress</li>
+            <li>Follows PyTorch <strong>custom op registration</strong> &mdash; import at startup registers all ops</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </div>
+
+
+
+  <!-- ============ SLIDE 10: Features Status ============ -->
+  <div class="slide">
+    <h2>Features Status <span class="text-sm text-dim" style="font-weight:400;">(as of v0.17.0)</span></h2>
+    <div style="display:flex; gap:16px; margin-bottom:16px; flex-wrap:wrap;">
+      <span class="text-sm"><span style="display:inline-block; width:10px; height:10px; border-radius:2px; background:var(--vllm-blue); margin-right:4px; vertical-align:middle;"></span><strong>User Facing</strong> &mdash; visible to end users</span>
+      <span class="text-sm"><span style="display:inline-block; width:10px; height:10px; border-radius:2px; background:var(--orange); margin-right:4px; vertical-align:middle;"></span><strong>Perf Critical</strong> &mdash; directly impacts KPI targets</span>
+      <span class="text-sm"><span style="display:inline-block; width:10px; height:10px; border-radius:2px; background:var(--green); margin-right:4px; vertical-align:middle;"></span><strong>CUDA On Par</strong> &mdash; match CUDA behavior</span>
+      <span class="text-sm"><span style="display:inline-block; width:10px; height:10px; border-radius:2px; background:var(--text-dim); margin-right:4px; vertical-align:middle;"></span><strong>Evolution</strong> &mdash; upstream community driven</span>
+    </div>
+    <div class="flex-grow">
+      <table class="dense-table">
+        <thead>
+          <tr><th>Feature</th><th>Description</th><th>Status</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="bold">Model Parallelism (DP/TP/PP/EP)</td>
+            <td>Multi-card parallelism</td>
+            <td><span class="badge badge-green">Production Ready</span></td>
+          </tr>
+          <tr>
+            <td class="bold">Automatic Prefix-Caching</td>
+            <td>Reuse KV-cache for shared prefixes</td>
+            <td><span class="badge badge-green">Default On</span></td>
+          </tr>
+          <tr>
+            <td class="bold">Async-Scheduling</td>
+            <td>Overlap forward &amp; sampling</td>
+            <td><span class="badge badge-green">Default On</span></td>
+          </tr>
+          <tr>
+            <td class="bold">Speculative Decoding</td>
+            <td>Draft model prediction &amp; verification</td>
+            <td><span class="badge badge-green">Functional Ready</span></td>
+          </tr>
+          <tr>
+            <td class="bold">Model Runner V2</td>
+            <td>Refactored execution engine</td>
+            <td><span class="badge badge-yellow">Accuracy ready, perf WIP</span></td>
+          </tr>
+          <tr>
+            <td class="bold">Low Precision (FP8/MXFP8/MXFP4)</td>
+            <td>Reduced precision inference</td>
+            <td><span class="badge badge-yellow">WIP &mdash; Kernel Integration</span></td>
+          </tr>
+          <tr>
+            <td class="bold">vLLM Compile</td>
+            <td>torch.compile + Inductor fusion</td>
+            <td><span class="badge badge-orange">Experimental</span></td>
+          </tr>
+          <tr>
+            <td class="bold">XPU Graph (Static Graph)</td>
+            <td>Capture &amp; replay execution graphs</td>
+            <td><span class="badge badge-orange">Experimental</span></td>
+          </tr>
+          <tr>
+            <td class="bold">PD Disaggregation</td>
+            <td>Disaggregate prefill / decode</td>
+            <td><span class="badge badge-orange">Experimental</span></td>
+          </tr>
+          <tr>
+            <td class="bold">Unified Attention Backend</td>
+            <td>Consolidate attention variants</td>
+            <td><span class="badge badge-dim">Planning</span></td>
+          </tr>
+          <tr>
+            <td class="bold">DeepEP</td>
+            <td>All-to-all for MoE expert parallelism</td>
+            <td><span class="badge badge-dim">Planning</span></td>
+          </tr>
+          <tr>
+            <td class="bold">Long Context &amp; KV Optimization</td>
+            <td>KV offload, compression, LMCache</td>
+            <td><span class="badge badge-dim">Planning</span></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- ============ SLIDE 11: E2E Walkthrough ============ -->
+  <div class="slide">
+    <h2>End-to-End Walkthrough: &ldquo;Hello vLLM&rdquo;</h2>
+    <div class="grid-2 flex-grow">
+      <div style="display:flex; flex-direction:column; justify-content:center; gap:3px;">
+        <div class="flow-step" style="border-color:var(--vllm-blue); border-width:2px;">
+          <span class="text-dim text-xs">User prompt</span><br>
+          <strong>&ldquo;What is vLLM?&rdquo;</strong>
+        </div>
+        <div class="flow-arrow">&#x25BC;</div>
+        <div class="flow-step">API Server <span class="text-dim text-xs">&mdash; OpenAI-compatible HTTP</span></div>
+        <div class="flow-arrow">&#x25BC;</div>
+        <div class="flow-step">Tokenizer <span class="text-dim text-xs">&mdash; text &rarr; token IDs</span></div>
+        <div class="flow-arrow">&#x25BC;</div>
+        <div class="flow-step">Scheduler <span class="text-dim text-xs">&mdash; batch requests, allocate KV cache blocks</span></div>
+        <div class="flow-arrow">&#x25BC;</div>
+        <div class="flow-step" style="border-color:var(--vllm-blue); border-width:2px; background:var(--vllm-blue-10);">
+          <strong style="color:var(--vllm-blue-dark);">Model Runner (XPU)</strong><br>
+          <span class="text-sm">Unified step: batch of tokens from different requests</span>
+        </div>
+        <div class="flow-arrow">&#x25BC;</div>
+        <div class="flow-step">Detokenizer <span class="text-dim text-xs">&mdash; token IDs &rarr; streamed text</span></div>
+        <div class="flow-arrow">&#x25BC;</div>
+        <div class="flow-step" style="border-color:var(--green); border-width:2px;">
+          <span class="text-dim text-xs">Response</span><br>
+          <strong>&ldquo;vLLM is a high-throughput serving engine...&rdquo;</strong>
+        </div>
+      </div>
+      <div>
+        <h3 class="mb-12">Inside Model Runner (V1 Engine)</h3>
+        <div class="card card-filled mb-12">
+          <h3 style="color:var(--vllm-blue); margin-bottom:6px;">Token-centric Unified Step</h3>
+          <p class="text-sm">In V1, there is <strong>no explicit prefill/decode phase</strong>. Tokens are the first citizen &mdash; each step processes a <strong>batch of tokens from different requests</strong>, mixing new-request tokens and ongoing-decode tokens together.</p>
+        </div>
+        <div class="card card-filled mb-12">
+          <h3 style="color:var(--vllm-blue); margin-bottom:6px;">Chunked Prefill</h3>
+          <p class="text-sm">Long prompts are broken into <strong>chunks</strong> and interleaved with decode tokens in the same batch. This keeps decode latency stable while processing new requests.</p>
+        </div>
+        <div class="card card-filled mb-16">
+          <h3 style="color:var(--vllm-blue); margin-bottom:6px;">Metadata Drives Kernels</h3>
+          <p class="text-sm">The runner passes per-request metadata &mdash; <code>num_computed_tokens</code>, <code>num_scheduled_tokens</code> &mdash; so kernels know each token&rsquo;s context (new vs. cached, position in sequence) without separate code paths.</p>
+        </div>
+        <h3 class="mb-8">Where each slide maps in</h3>
+        <table class="dense-table">
+          <tbody>
+            <tr><td>Embedding, RMSNorm, RoPE</td><td style="color:var(--vllm-blue); font-weight:500;">Slide 7 &mdash; Workload View</td></tr>
+            <tr><td>Attention dispatch</td><td style="color:var(--vllm-blue); font-weight:500;">Slide 8 &mdash; Attention Backend</td></tr>
+            <tr><td>FFN / MoE kernels</td><td style="color:var(--vllm-blue); font-weight:500;">Slide 9 &mdash; XPU Kernels</td></tr>
+            <tr><td>Multi-GPU execution</td><td style="color:var(--vllm-blue); font-weight:500;">Slide 6 &mdash; Parallelism</td></tr>
+            <tr><td>Eager / Compile / Graph</td><td style="color:var(--vllm-blue); font-weight:500;">Slide 5 &mdash; Execution Modes</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ SLIDE 12: Get Started ============ -->
+  <div class="slide">
+    <h2>Get Started</h2>
+    <div class="grid-2 flex-grow">
+      <div>
+        <h3 class="mb-8">Docker (Recommended)</h3>
+        <div class="card card-filled" style="font-family:'JetBrains Mono',monospace; font-size:0.78rem; line-height:1.8; padding:20px;">
+          <span class="text-dim"># Build from source</span><br>
+          $ git clone https://github.com/vllm-project/vllm<br>
+          $ cd vllm<br>
+          $ docker build -f docker/Dockerfile.xpu \<br>
+          &nbsp;&nbsp;&nbsp;&nbsp;-t vllm-xpu .<br>
+          <br>
+          <span class="text-dim"># Run serving</span><br>
+          $ docker run --rm -it \<br>
+          &nbsp;&nbsp;&nbsp;&nbsp;--device /dev/dri \<br>
+          &nbsp;&nbsp;&nbsp;&nbsp;-v ~/.cache/huggingface:/root/.cache/huggingface \<br>
+          &nbsp;&nbsp;&nbsp;&nbsp;-p 8000:8000 \<br>
+          &nbsp;&nbsp;&nbsp;&nbsp;vllm-xpu \<br>
+          &nbsp;&nbsp;&nbsp;&nbsp;--model Qwen/Qwen2.5-7B-Instruct<br>
+          <br>
+          <span class="text-dim"># Test with curl</span><br>
+          $ curl http://localhost:8000/v1/completions \<br>
+          &nbsp;&nbsp;&nbsp;&nbsp;-H "Content-Type: application/json" \<br>
+          &nbsp;&nbsp;&nbsp;&nbsp;-d '{"model": "Qwen/Qwen2.5-7B-Instruct",<br>
+          &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;"prompt": "What is vLLM?",<br>
+          &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;"max_tokens": 128}'
+        </div>
+      </div>
+      <div>
+        <h3 class="mb-8">What's in the Docker Image</h3>
+        <div class="card card-filled mb-12">
+          <table class="dense-table" style="border:none;">
+            <tbody>
+              <tr><td class="bold" style="border:none;">Base Image</td><td style="border:none;">Intel DLE 2025.3 (Ubuntu 24.04)</td></tr>
+              <tr><td class="bold" style="border:none;">PyTorch</td><td style="border:none;">PyTorch XPU (from pip index)</td></tr>
+              <tr><td class="bold" style="border:none;">Compiler</td><td style="border:none;">Intel DPC++ 2025.3</td></tr>
+              <tr><td class="bold" style="border:none;">oneCCL</td><td style="border:none;">2021.15.7 (with BMG support)</td></tr>
+              <tr><td class="bold" style="border:none;">Triton</td><td style="border:none;">triton-xpu 3.6.0</td></tr>
+              <tr><td class="bold" style="border:none;">Entrypoint</td><td style="border:none;"><code>vllm serve</code></td></tr>
+            </tbody>
+          </table>
+        </div>
+        <h3 class="mb-8">Multi-GPU (Tensor Parallel)</h3>
+        <div class="card card-filled" style="font-family:'JetBrains Mono',monospace; font-size:0.78rem; line-height:1.8; padding:16px;">
+          $ docker run --rm -it \<br>
+          &nbsp;&nbsp;&nbsp;&nbsp;--device /dev/dri \<br>
+          &nbsp;&nbsp;&nbsp;&nbsp;-p 8000:8000 \<br>
+          &nbsp;&nbsp;&nbsp;&nbsp;vllm-xpu \<br>
+          &nbsp;&nbsp;&nbsp;&nbsp;--model Qwen/Qwen2.5-32B-Instruct \<br>
+          &nbsp;&nbsp;&nbsp;&nbsp;--tensor-parallel-size 4
+        </div>
+        <p class="text-sm mt-12"><a href="https://github.com/vllm-project/vllm/blob/main/docker/Dockerfile.xpu">Dockerfile.xpu</a> &mdash; Same CLI as CUDA, XPU device auto-detected</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ SLIDE 13: End ============ -->
+  <div class="slide end-slide">
+    <h1>Thank You</h1>
+    <p>Questions &amp; Discussion</p>
+    <div class="yellow-bar"></div>
+  </div>
+
+</div>
+
+<!-- Sidebar Overlay -->
+<div class="sidebar-overlay" id="sidebarOverlay" onclick="toggleSidebar()"></div>
+
+<!-- Sidebar -->
+<div class="sidebar" id="sidebar">
+  <div class="sidebar-title">Slides</div>
+  <div id="sidebarItems"></div>
+</div>
+
+<!-- Speaker Notes Panel -->
+
+<!-- Navigation Bar -->
+<div class="nav-bar">
+  <button onclick="toggleSidebar()" id="menuBtn" title="Press M for menu">&#x2630;</button>
+  <button onclick="prevSlide()">&#x25C0; Prev</button>
+  <span id="slideNum" style="min-width:60px; text-align:center;">1 / 12</span>
+  <div class="progress-track">
+    <div class="progress-fill" id="progressFill"></div>
+  </div>
+  <button onclick="nextSlide()">Next &#x25B6;</button>
+</div>
+
+<script>
+  const slides = document.querySelectorAll('.slide');
+  let current = 0;
+  let sidebarOpen = false;
+
+  const slideTitles = [
+    'Title',
+    'Agenda',
+    'GPU Software Stack',
+    'vLLM Internal Architecture',
+    'Execution Modes on XPU',
+    'Model Parallelism & Comm',
+    'Workload View',
+    'Attention Backend',
+    'vLLM XPU Kernels',
+    'Features Status',
+    'E2E Walkthrough',
+    'Get Started',
+    'Q&A'
+  ];
+
+  // Build sidebar items
+  const sidebarContainer = document.getElementById('sidebarItems');
+  slideTitles.forEach((title, i) => {
+    const item = document.createElement('div');
+    item.className = 'sidebar-item' + (i === 0 ? ' active' : '');
+    item.innerHTML = `<span class="num">${String(i + 1).padStart(2, '0')}</span><span>${title}</span>`;
+    item.onclick = () => { showSlide(i); closeSidebar(); };
+    sidebarContainer.appendChild(item);
+  });
+
+  function showSlide(n) {
+    slides[current].classList.remove('active');
+    current = Math.max(0, Math.min(n, slides.length - 1));
+    slides[current].classList.add('active');
+    document.getElementById('slideNum').textContent = `${current + 1} / ${slides.length}`;
+    document.getElementById('progressFill').style.width = `${((current + 1) / slides.length) * 100}%`;
+    updateSidebar();
+  }
+
+  function nextSlide() { showSlide(current + 1); }
+  function prevSlide() { showSlide(current - 1); }
+
+  function updateSidebar() {
+    const items = document.querySelectorAll('.sidebar-item');
+    items.forEach((item, i) => {
+      item.classList.toggle('active', i === current);
+    });
+  }
+
+  function toggleSidebar() {
+    sidebarOpen = !sidebarOpen;
+    document.getElementById('sidebar').classList.toggle('open', sidebarOpen);
+    document.getElementById('sidebarOverlay').classList.toggle('open', sidebarOpen);
+  }
+
+  function closeSidebar() {
+    sidebarOpen = false;
+    document.getElementById('sidebar').classList.remove('open');
+    document.getElementById('sidebarOverlay').classList.remove('open');
+  }
+
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && sidebarOpen) { closeSidebar(); return; }
+    if (e.key === 'm' || e.key === 'M') { toggleSidebar(); return; }
+    if (sidebarOpen) return;
+    if (e.key === 'ArrowRight' || e.key === 'ArrowDown' || e.key === ' ') { e.preventDefault(); nextSlide(); }
+    if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') { e.preventDefault(); prevSlide(); }
+    if (e.key === 'Home') { showSlide(0); }
+    if (e.key === 'End') { showSlide(slides.length - 1); }
+  });
+
+  let touchStartX = 0;
+  document.addEventListener('touchstart', (e) => { touchStartX = e.touches[0].clientX; });
+  document.addEventListener('touchend', (e) => {
+    const diff = e.changedTouches[0].clientX - touchStartX;
+    if (Math.abs(diff) > 50) { diff < 0 ? nextSlide() : prevSlide(); }
+  });
+
+  showSlide(0);
+</script>
+
+</body>
+</html>

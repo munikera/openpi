@@ -352,26 +352,73 @@ def benchmark_ov(xml_path: Path, args: Args) -> None:
     compiled  = core.compile_model(str(xml_path), device_name=args.ov_device, config=config)
     infer_req = compiled.create_infer_request()
 
+    # Pre-build synthetic uint8 images (same shape as real obs) — reused each iteration
+    # to avoid RNG overhead, but preprocessing is done inside the loop to match real cost.
     B = 1
-    inputs_np = [
-        np.zeros((B, args.num_cameras, 3, 224, 224), dtype=np.float32),  # images
-        np.array([[1.0, 1.0, 0.0]], dtype=np.float32),                   # img_masks
-        np.zeros((B, args.tokenizer_len), dtype=np.int64),               # lang_tokens
-        np.ones ((B, args.tokenizer_len), dtype=np.float32),             # lang_masks
-        np.zeros((B, args.state_dim), dtype=np.float32),                 # state
-        np.zeros((B, args.action_horizon, args.action_dim_full), dtype=np.float32),  # noise
-    ]
+    rng = np.random.default_rng(args.seed)
+    img_uint8   = rng.integers(0, 256, (224, 224, 3), dtype=np.uint8)   # base camera
+    wrist_uint8 = rng.integers(0, 256, (224, 224, 3), dtype=np.uint8)   # wrist camera
+    state_np    = np.zeros((B, args.state_dim), dtype=np.float32)
+    img_masks_np = np.array([[1.0, 1.0, 0.0]], dtype=np.float32)
+
+    # Tokenizer — same object used in OVLiberoPolicy (includes tokenization cost per call)
+    try:
+        from openpi.models.tokenizer import PaligemmaTokenizer as _PaligemmaTokenizer
+        _tokenizer = _PaligemmaTokenizer(max_len=args.tokenizer_len)
+        _dummy_prompt = "pick up the red block and place it on the plate"
+        print("  Tokenizer loaded — tokenization cost included in timing.")
+    except Exception as e:
+        _tokenizer = None
+        print(f"  WARNING: Could not load tokenizer ({e}); using pre-built zero tokens.")
+        _lang_tokens_np = np.zeros((B, args.tokenizer_len), dtype=np.int64)
+        _lang_masks_np  = np.ones ((B, args.tokenizer_len), dtype=np.float32)
+
+    def _preprocess_and_infer():
+        """Mirrors OVLiberoPolicy.infer() step-by-step, including all surrounding overhead."""
+        # ── Tokenize prompt (called every step in real policy) ────────────
+        if _tokenizer is not None:
+            tokens, masks = _tokenizer.tokenize(_dummy_prompt)
+            lang_tokens_np = tokens.astype(np.int64)[None]   # [1, tokenizer_len]
+            lang_masks_np  = masks.astype(np.float32)[None]  # [1, tokenizer_len]
+        else:
+            lang_tokens_np = _lang_tokens_np
+            lang_masks_np  = _lang_masks_np
+
+        # ── Image preprocessing (uint8 HWC → float32 CHW, [-1, 1]) ──────
+        img_f   = img_uint8.astype(np.float32)   / 255.0 * 2.0 - 1.0
+        wrist_f = wrist_uint8.astype(np.float32) / 255.0 * 2.0 - 1.0
+        zeros_f = np.zeros_like(img_f)
+
+        def hwc_to_chw(x):
+            return np.transpose(x, (2, 0, 1))
+
+        images = np.stack([
+            hwc_to_chw(img_f),
+            hwc_to_chw(wrist_f),
+            hwc_to_chw(zeros_f),
+        ], axis=0)[None]  # [1, 3, 3, 224, 224]
+
+        # ── Noise sample (same as real inference) ────────────────────────
+        noise = np.random.randn(B, args.action_horizon, args.action_dim_full).astype(np.float32)
+
+        # ── OV infer ─────────────────────────────────────────────────────
+        inputs = [images, img_masks_np, lang_tokens_np, lang_masks_np, state_np, noise]
+        infer_req.infer(inputs)
+
+        # ── Output copy + action un-normalization (same as OVLiberoPolicy) ──
+        actions = infer_req.get_output_tensor(0).data.copy()  # [1, 10, 7]
+        _ = actions[0]  # [10, 7] — mimics the slice in infer()
 
     print(f"\nWarming up ({args.num_warmup} calls) ...")
     for _ in range(args.num_warmup):
-        infer_req.infer(inputs_np)
+        _preprocess_and_infer()
     print("Warmup done.\n")
 
     print(f"Running {args.num_iters} timed calls ...")
     times = []
     for _ in range(args.num_iters):
         t0 = time.time()
-        infer_req.infer(inputs_np)
+        _preprocess_and_infer()
         times.append(time.time() - t0)
 
     ms = np.array(times) * 1000.0
@@ -437,6 +484,20 @@ def main(args: Args):
     fp16_xml  = Path(args.ov_fp16_dir) / "model.xml"
     active_xml = fp16_xml if args.compress_to_fp16 else fp32_xml
     val_dir   = Path(args.onnx_dir) / "validation"
+
+    # Warn if output dirs use the default names and num_steps != 10,
+    # so users know the 10-step model would be overwritten.
+    if args.num_steps != 10 and args.ov_fp32_dir == "profiler_output/libero_fp32":
+        suggested_onnx = f"profiler_output/libero_onnx_steps{args.num_steps}"
+        suggested_fp32 = f"profiler_output/libero_fp32_steps{args.num_steps}"
+        suggested_fp16 = f"profiler_output/libero_fp16_steps{args.num_steps}"
+        print(f"  ⚠ WARNING: --num-steps {args.num_steps} but output dirs still use the")
+        print(f"    default 10-step paths. This will OVERWRITE your existing 10-step model.")
+        print(f"    To keep both, re-run with:")
+        print(f"      --onnx-dir {suggested_onnx}")
+        print(f"      --ov-fp32-dir {suggested_fp32}")
+        print(f"      --ov-fp16-dir {suggested_fp16}")
+        print()
 
     print("=" * 60)
     print("LIBERO OpenVINO Conversion")

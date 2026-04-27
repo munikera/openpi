@@ -321,8 +321,11 @@ def main(args: Args) -> None:
     print(f"Running {args.num_iters} timed inference calls...")
     step_times: list[float] = []
     for _ in range(args.num_iters):
-        obs = make_synthetic_obs(rng)
+        # Build a fresh obs each iteration (new random images/state) — same as a real
+        # robot loop where you'd read new camera frames before each inference call.
+        # t_start wraps obs creation + infer() to match real end-to-end latency.
         t_start = time.time()
+        obs = make_synthetic_obs(rng)
         if ov_policy is not None:
             ov_policy.infer(obs)
         else:
