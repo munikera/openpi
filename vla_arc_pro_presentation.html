@@ -201,10 +201,11 @@
 <!-- ════ SLIDE 4: LLM → VLM → VLA ════ -->
 <div class="slide">
   <h2>From LLM to VLA — The AI Stack</h2>
-  <div class="flex-grow" style="display:grid;grid-template-columns:1fr 1fr;gap:20px;">
 
-    <!-- LEFT: progression cards -->
-    <div style="display:flex;flex-direction:column;gap:10px;">
+    <!-- 5-row × 2-col grid: each row is shared → perfect alignment -->
+    <div class="flex-grow" style="display:grid;grid-template-columns:1fr 1fr;grid-template-rows:1fr auto 1fr auto 1fr;gap:10px 20px;">
+
+      <!-- ── ROW 1: LLM ── -->
       <div class="card card-accent" style="border-left-color:#94a3b8;">
         <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;">
           <span class="badge badge-dim" style="font-size:.75rem;">LLM</span>
@@ -217,8 +218,41 @@
         </div>
       </div>
 
+      <div class="card card-accent" style="border-left-color:#94a3b8;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:5px;">
+        <div style="font-size:.65rem;font-weight:700;color:var(--text-dim);letter-spacing:.06em;align-self:flex-start;margin-bottom:2px;">TOKEN FLOW · LLM</div>
+        <div style="display:flex;flex-direction:column;gap:4px;width:180px;">
+          <div style="display:flex;flex-direction:column;align-items:flex-end;gap:2px;">
+            <div style="font-size:.56rem;color:#f97316;font-weight:600;">↺ autoregressive</div>
+            <div style="font-size:.56rem;color:var(--text-dim);font-weight:600;">Text tokens</div>
+            <div style="display:flex;gap:3px;">
+              <div style="width:13px;height:13px;background:#ffb366;border-radius:3px;"></div>
+              <div style="width:13px;height:13px;background:#ffb366;border-radius:3px;"></div>
+              <div style="width:13px;height:13px;background:#ffb366;border-radius:3px;"></div>
+              <div style="width:13px;height:13px;background:#ffb366;border-radius:3px;"></div>
+              <div style="width:13px;height:13px;background:#ffb366;border-radius:3px;"></div>
+            </div>
+          </div>
+          <div style="text-align:center;font-size:1rem;color:var(--intel-blue);line-height:1;">↑</div>
+          <div style="background:#4a90e2;border-radius:7px;padding:7px 0;color:#fff;font-size:.82rem;font-weight:700;letter-spacing:.06em;text-align:center;">LLM</div>
+          <div style="text-align:center;font-size:1rem;color:var(--intel-blue);line-height:1;">↑</div>
+          <div style="display:flex;flex-direction:column;align-items:flex-start;gap:2px;">
+            <div style="display:flex;gap:3px;">
+              <div style="width:13px;height:13px;background:#ffb366;border-radius:3px;"></div>
+              <div style="width:13px;height:13px;background:#ffb366;border-radius:3px;"></div>
+              <div style="width:13px;height:13px;background:#ffb366;border-radius:3px;"></div>
+              <div style="width:13px;height:13px;background:#ffb366;border-radius:3px;"></div>
+              <div style="width:13px;height:13px;background:#ffb366;border-radius:3px;"></div>
+            </div>
+            <div style="font-size:.56rem;color:var(--text-dim);font-weight:600;">Text tokens</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── ROW 2: connector ── -->
+      <div style="text-align:center;font-size:1.2rem;color:var(--intel-blue);">+🖼️ Images</div>
       <div style="text-align:center;font-size:1.2rem;color:var(--intel-blue);">+🖼️ Images</div>
 
+      <!-- ── ROW 3: VLM ── -->
       <div class="card card-accent" style="border-left-color:var(--purple-text);">
         <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;">
           <span class="badge badge-purple" style="font-size:.75rem;">VLM</span>
@@ -231,8 +265,52 @@
         </div>
       </div>
 
+      <div class="card card-accent" style="border-left-color:var(--purple-text);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:5px;">
+        <div style="font-size:.65rem;font-weight:700;color:var(--text-dim);letter-spacing:.06em;align-self:flex-start;margin-bottom:2px;">TOKEN FLOW · VLM</div>
+        <div style="display:flex;flex-direction:column;gap:4px;width:180px;">
+          <div style="display:flex;flex-direction:column;align-items:flex-end;gap:2px;">
+            <div style="font-size:.56rem;color:var(--text-dim);font-weight:600;">Text tokens</div>
+            <div style="display:flex;gap:3px;">
+              <div style="width:13px;height:13px;background:#ffb366;border-radius:3px;"></div>
+              <div style="width:13px;height:13px;background:#ffb366;border-radius:3px;"></div>
+              <div style="width:13px;height:13px;background:#ffb366;border-radius:3px;"></div>
+              <div style="width:13px;height:13px;background:#ffb366;border-radius:3px;"></div>
+              <div style="width:13px;height:13px;background:#ffb366;border-radius:3px;"></div>
+            </div>
+          </div>
+          <div style="text-align:center;font-size:1rem;color:var(--intel-blue);line-height:1;">↑</div>
+          <div style="background:#4a90e2;border-radius:7px;padding:7px 0;color:#fff;font-size:.82rem;font-weight:700;letter-spacing:.06em;text-align:center;">VLM</div>
+          <div style="text-align:center;font-size:1rem;color:var(--intel-blue);line-height:1;">↑</div>
+          <div style="display:flex;flex-direction:column;align-items:flex-start;gap:2px;">
+            <div style="display:flex;gap:6px;align-items:flex-end;">
+              <div style="display:flex;flex-direction:column;align-items:center;gap:2px;">
+                <div style="display:flex;gap:2px;">
+                  <div style="width:12px;height:12px;background:#ffb366;border-radius:3px;"></div>
+                  <div style="width:12px;height:12px;background:#ffb366;border-radius:3px;"></div>
+                  <div style="width:12px;height:12px;background:#ffb366;border-radius:3px;"></div>
+                  <div style="width:12px;height:12px;background:#ffb366;border-radius:3px;"></div>
+                </div>
+                <div style="font-size:.52rem;color:var(--text-dim);font-weight:600;">Text tokens</div>
+              </div>
+              <div style="display:flex;flex-direction:column;align-items:center;gap:2px;">
+                <div style="display:flex;gap:2px;">
+                  <div style="width:12px;height:12px;background:#a78bfa;border-radius:3px;"></div>
+                  <div style="width:12px;height:12px;background:#a78bfa;border-radius:3px;"></div>
+                  <div style="width:12px;height:12px;background:#a78bfa;border-radius:3px;"></div>
+                  <div style="width:12px;height:12px;background:#a78bfa;border-radius:3px;"></div>
+                </div>
+                <div style="font-size:.52rem;color:var(--text-dim);font-weight:600;">Image tokens</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── ROW 4: connector ── -->
+      <div style="text-align:center;font-size:1.2rem;color:var(--intel-blue);">+🤖 Robot Actions</div>
       <div style="text-align:center;font-size:1.2rem;color:var(--intel-blue);">+🤖 Robot Actions</div>
 
+      <!-- ── ROW 5: VLA ── -->
       <div class="card card-accent">
         <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;">
           <span class="badge badge-blue" style="font-size:.75rem;">VLA</span>
@@ -244,52 +322,55 @@
           Output: <span style="color:var(--text);">[Δjoint₁, Δjoint₂, …, gripper]</span>
         </div>
       </div>
+
+      <div class="card card-accent" style="display:flex;flex-direction:column;align-items:center;justify-content:center;gap:5px;">
+        <div style="font-size:.65rem;font-weight:700;color:var(--text-dim);letter-spacing:.06em;align-self:flex-start;margin-bottom:2px;">TOKEN FLOW · VLA</div>
+        <div style="display:flex;flex-direction:column;gap:4px;width:180px;">
+          <div style="display:flex;flex-direction:column;align-items:flex-end;gap:2px;">
+            <div style="font-size:.56rem;color:#f97316;font-weight:600;">Action tokens</div>
+            <div style="border:1.5px solid #ffb366;border-radius:5px;padding:3px 4px;display:flex;gap:3px;">
+              <div style="width:12px;height:12px;background:#ffb366;border-radius:2px;"></div>
+              <div style="width:12px;height:12px;background:#ffb366;border-radius:2px;"></div>
+              <div style="width:12px;height:12px;background:#ffb366;border-radius:2px;"></div>
+              <div style="width:12px;height:12px;background:#ffb366;border-radius:2px;"></div>
+              <div style="width:12px;height:12px;background:#ffb366;border-radius:2px;"></div>
+            </div>
+          </div>
+          <div style="text-align:center;font-size:1rem;color:var(--intel-blue);line-height:1;">↑</div>
+          <div style="background:#4a90e2;border-radius:7px;padding:7px 0;color:#fff;font-size:.82rem;font-weight:700;letter-spacing:.06em;text-align:center;">VLA</div>
+          <div style="text-align:center;font-size:1rem;color:var(--intel-blue);line-height:1;">↑</div>
+          <div style="display:flex;flex-direction:column;align-items:flex-start;gap:2px;">
+            <div style="display:flex;gap:5px;align-items:flex-end;">
+              <div style="display:flex;flex-direction:column;align-items:center;gap:2px;">
+                <div style="display:flex;gap:2px;">
+                  <div style="width:11px;height:11px;background:#ffb366;border-radius:2px;"></div>
+                  <div style="width:11px;height:11px;background:#ffb366;border-radius:2px;"></div>
+                  <div style="width:11px;height:11px;background:#ffb366;border-radius:2px;"></div>
+                </div>
+                <div style="font-size:.5rem;color:var(--text-dim);font-weight:600;">Text tokens</div>
+              </div>
+              <div style="display:flex;flex-direction:column;align-items:center;gap:2px;">
+                <div style="display:flex;gap:2px;">
+                  <div style="width:11px;height:11px;background:#a78bfa;border-radius:2px;"></div>
+                  <div style="width:11px;height:11px;background:#a78bfa;border-radius:2px;"></div>
+                  <div style="width:11px;height:11px;background:#a78bfa;border-radius:2px;"></div>
+                </div>
+                <div style="font-size:.5rem;color:var(--text-dim);font-weight:600;">Image tokens</div>
+              </div>
+              <div style="display:flex;flex-direction:column;align-items:center;gap:2px;">
+                <div style="display:flex;gap:2px;">
+                  <div style="width:11px;height:11px;background:#34d399;border-radius:2px;"></div>
+                  <div style="width:11px;height:11px;background:#34d399;border-radius:2px;"></div>
+                </div>
+                <div style="font-size:.5rem;color:var(--text-dim);font-weight:600;">Proprio tokens</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
     </div>
 
-    <!-- RIGHT: architecture visual -->
-    <div style="display:flex;flex-direction:column;gap:10px;justify-content:center;">
-      <h3 class="mb-8" style="font-size:.9rem;">Why VLAs are Powerful</h3>
-      <div class="card card-filled" style="padding:12px 16px;">
-        <div style="display:flex;flex-direction:column;gap:8px;">
-          <div style="display:flex;align-items:center;gap:10px;">
-            <div style="width:28px;height:28px;border-radius:6px;background:var(--green-bg);border:1px solid var(--green);display:flex;align-items:center;justify-content:center;font-size:.9rem;flex-shrink:0;">✓</div>
-            <p class="text-sm" style="margin:0;"><strong>No reward shaping</strong> — imitation learning from human demonstrations is today's dominant approach for manipulation</p>
-          </div>
-          <div style="display:flex;align-items:center;gap:10px;">
-            <div style="width:28px;height:28px;border-radius:6px;background:var(--green-bg);border:1px solid var(--green);display:flex;align-items:center;justify-content:center;font-size:.9rem;flex-shrink:0;">✓</div>
-            <p class="text-sm" style="margin:0;"><strong>No sim2real gap</strong> when trained on real teleoperation data</p>
-          </div>
-          <div style="display:flex;align-items:center;gap:10px;">
-            <div style="width:28px;height:28px;border-radius:6px;background:var(--green-bg);border:1px solid var(--green);display:flex;align-items:center;justify-content:center;font-size:.9rem;flex-shrink:0;">✓</div>
-            <p class="text-sm" style="margin:0;"><strong>Generalization</strong> — handles objects and environments never seen in training</p>
-          </div>
-          <div style="display:flex;align-items:center;gap:10px;">
-            <div style="width:28px;height:28px;border-radius:6px;background:var(--green-bg);border:1px solid var(--green);display:flex;align-items:center;justify-content:center;font-size:.9rem;flex-shrink:0;">✓</div>
-            <p class="text-sm" style="margin:0;"><strong>Scales with data and compute</strong> — same recipe as LLMs, applied to robotics</p>
-          </div>
-        </div>
-      </div>
-      <div class="card" style="border:2px solid var(--orange);background:var(--orange-bg);">
-        <h3 class="mb-5" style="font-size:.88rem;color:var(--orange);">The Open Challenge</h3>
-        <p class="text-sm">Unlike language, robot actions are <strong>continuous and real-time</strong>. The autoregressive token-by-token approach used by LLMs is too slow and too coarse for precise motor control. This drives the need for specialized <strong>action heads</strong>.</p>
-      </div>
-      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;text-align:center;">
-        <div class="card card-filled" style="padding:10px 6px;">
-          <div style="font-size:1rem;margin-bottom:3px;">🌐</div>
-          <div class="text-xs text-dim">Cross-embodiment<br>generalization</div>
-        </div>
-        <div class="card card-filled" style="padding:10px 6px;">
-          <div style="font-size:1rem;margin-bottom:3px;">⚡</div>
-          <div class="text-xs text-dim">Real-time control<br>&lt;100 ms / step</div>
-        </div>
-        <div class="card card-filled" style="padding:10px 6px;">
-          <div style="font-size:1rem;margin-bottom:3px;">📦</div>
-          <div class="text-xs text-dim">Scales with<br>data + compute</div>
-        </div>
-      </div>
-    </div>
-
-  </div>
 </div>
 
 <!-- ════ SLIDE 5: Action Representation ════ -->
