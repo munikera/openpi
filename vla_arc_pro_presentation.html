@@ -130,15 +130,17 @@
   <div class="flex-grow" style="display:flex;align-items:center;">
     <div style="display:grid;grid-template-columns:auto 1fr;gap:10px 28px;font-size:1.1rem;width:100%;max-width:680px;">
       <span class="bold" style="font-size:1.4rem;color:var(--intel-blue);">01</span><span class="bold">Strategic Context</span>
-      <span class="bold" style="font-size:1.4rem;color:var(--intel-blue);">02</span><span class="bold">VLA Model Overview</span>
-      <span class="bold" style="font-size:1.4rem;color:var(--intel-blue);">03</span><span class="bold">Enabling π0.5 on Arc Pro B70</span>
-      <span class="bold" style="font-size:1.4rem;color:var(--intel-blue);">04</span><span class="bold">PyTorch Profiling</span>
-      <span class="bold" style="font-size:1.4rem;color:var(--intel-blue);">05</span><span class="bold">ECG Team Comparison</span>
-      <span class="bold" style="font-size:1.4rem;color:var(--intel-blue);">06</span><span class="bold">OpenVINO Optimization</span>
-      <span class="bold" style="font-size:1.4rem;color:var(--intel-blue);">07</span><span class="bold">Benchmark Results</span>
-      <span class="bold" style="font-size:1.4rem;color:var(--intel-blue);">08</span><span class="bold">Breaking 100 ms</span>
-      <span class="bold" style="font-size:1.4rem;color:var(--intel-blue);">09</span><span class="bold">Live Demo</span>
-      <span class="bold" style="font-size:1.4rem;color:var(--intel-blue);">10</span><span class="bold">Q&amp;A</span>
+      <span class="bold" style="font-size:1.4rem;color:var(--intel-blue);">02</span><span class="bold">From LLM to VLA</span>
+      <span class="bold" style="font-size:1.4rem;color:var(--intel-blue);">03</span><span class="bold">Action Representation</span>
+      <span class="bold" style="font-size:1.4rem;color:var(--intel-blue);">04</span><span class="bold">VLA Models We Evaluated</span>
+      <span class="bold" style="font-size:1.4rem;color:var(--intel-blue);">05</span><span class="bold">Enabling π0.5 on Arc Pro B70</span>
+      <span class="bold" style="font-size:1.4rem;color:var(--intel-blue);">06</span><span class="bold">PyTorch Profiling</span>
+      <span class="bold" style="font-size:1.4rem;color:var(--intel-blue);">07</span><span class="bold">ECG Team Comparison</span>
+      <span class="bold" style="font-size:1.4rem;color:var(--intel-blue);">08</span><span class="bold">OpenVINO Optimization</span>
+      <span class="bold" style="font-size:1.4rem;color:var(--intel-blue);">09</span><span class="bold">Benchmark Results</span>
+      <span class="bold" style="font-size:1.4rem;color:var(--intel-blue);">10</span><span class="bold">Breaking 100 ms</span>
+      <span class="bold" style="font-size:1.4rem;color:var(--intel-blue);">11</span><span class="bold">Live Demo</span>
+      <span class="bold" style="font-size:1.4rem;color:var(--intel-blue);">12</span><span class="bold">Q&amp;A</span>
     </div>
   </div>
 </div>
@@ -196,10 +198,189 @@
   </div>
 </div>
 
-<!-- ════ SLIDE 4: VLA Models ════ -->
+<!-- ════ SLIDE 4: LLM → VLM → VLA ════ -->
 <div class="slide">
-  <h2>VLA Model Overview</h2>
-  <p class="mb-14">VLA models take <strong>camera images + language instructions</strong> → output <strong>robot joint actions</strong>, end-to-end. No hand-coded planning required.</p>
+  <h2>From LLM to VLA — The AI Stack</h2>
+  <div class="flex-grow" style="display:grid;grid-template-columns:1fr 1fr;gap:20px;">
+
+    <!-- LEFT: progression cards -->
+    <div style="display:flex;flex-direction:column;gap:10px;">
+      <div class="card card-accent" style="border-left-color:#94a3b8;">
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;">
+          <span class="badge badge-dim" style="font-size:.75rem;">LLM</span>
+          <h3 style="margin:0;font-size:.9rem;">Large Language Model</h3>
+        </div>
+        <p class="text-sm">Operates on <strong>discrete tokens</strong> — numbers encoding words or subwords. Trained to predict the next token via cross-entropy loss. Autoregressive: one token at a time.</p>
+        <div style="margin-top:8px;background:var(--surface-muted);border-radius:6px;padding:7px 10px;font-family:'JetBrains Mono',monospace;font-size:.72rem;color:var(--text-secondary);">
+          Input: <span style="color:var(--text);">"pick up the red block"</span><br>
+          Output: <span style="color:var(--text);">"I will grasp the red object…"</span>
+        </div>
+      </div>
+
+      <div style="text-align:center;font-size:1.2rem;color:var(--intel-blue);">+🖼️ Images</div>
+
+      <div class="card card-accent" style="border-left-color:var(--purple-text);">
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;">
+          <span class="badge badge-purple" style="font-size:.75rem;">VLM</span>
+          <h3 style="margin:0;font-size:.9rem;">Vision-Language Model</h3>
+        </div>
+        <p class="text-sm">Extends LLM with a <strong>visual encoder</strong> (e.g. SigLIP, ViT) that converts image patches into tokens. The model reasons over both image and text jointly.</p>
+        <div style="margin-top:8px;background:var(--surface-muted);border-radius:6px;padding:7px 10px;font-family:'JetBrains Mono',monospace;font-size:.72rem;color:var(--text-secondary);">
+          Input: <span style="color:var(--text);">[camera frame] + "pick up the red block"</span><br>
+          Output: <span style="color:var(--text);">"The red block is on the left side…"</span>
+        </div>
+      </div>
+
+      <div style="text-align:center;font-size:1.2rem;color:var(--intel-blue);">+🤖 Robot Actions</div>
+
+      <div class="card card-accent">
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;">
+          <span class="badge badge-blue" style="font-size:.75rem;">VLA</span>
+          <h3 style="margin:0;font-size:.9rem;">Vision-Language-Action Model</h3>
+        </div>
+        <p class="text-sm">Extends VLM with an <strong>action head</strong> that outputs motor commands directly. No hand-coded planners, no reward shaping. The model sees → understands → acts.</p>
+        <div style="margin-top:8px;background:var(--surface-muted);border-radius:6px;padding:7px 10px;font-family:'JetBrains Mono',monospace;font-size:.72rem;color:var(--text-secondary);">
+          Input: <span style="color:var(--text);">[3 cameras] + "pick up the red block"</span><br>
+          Output: <span style="color:var(--text);">[Δjoint₁, Δjoint₂, …, gripper]</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- RIGHT: architecture visual -->
+    <div style="display:flex;flex-direction:column;gap:10px;justify-content:center;">
+      <h3 class="mb-8" style="font-size:.9rem;">Why VLAs are Powerful</h3>
+      <div class="card card-filled" style="padding:12px 16px;">
+        <div style="display:flex;flex-direction:column;gap:8px;">
+          <div style="display:flex;align-items:center;gap:10px;">
+            <div style="width:28px;height:28px;border-radius:6px;background:var(--green-bg);border:1px solid var(--green);display:flex;align-items:center;justify-content:center;font-size:.9rem;flex-shrink:0;">✓</div>
+            <p class="text-sm" style="margin:0;"><strong>No reward shaping</strong> — imitation learning from human demonstrations is today's dominant approach for manipulation</p>
+          </div>
+          <div style="display:flex;align-items:center;gap:10px;">
+            <div style="width:28px;height:28px;border-radius:6px;background:var(--green-bg);border:1px solid var(--green);display:flex;align-items:center;justify-content:center;font-size:.9rem;flex-shrink:0;">✓</div>
+            <p class="text-sm" style="margin:0;"><strong>No sim2real gap</strong> when trained on real teleoperation data</p>
+          </div>
+          <div style="display:flex;align-items:center;gap:10px;">
+            <div style="width:28px;height:28px;border-radius:6px;background:var(--green-bg);border:1px solid var(--green);display:flex;align-items:center;justify-content:center;font-size:.9rem;flex-shrink:0;">✓</div>
+            <p class="text-sm" style="margin:0;"><strong>Generalization</strong> — handles objects and environments never seen in training</p>
+          </div>
+          <div style="display:flex;align-items:center;gap:10px;">
+            <div style="width:28px;height:28px;border-radius:6px;background:var(--green-bg);border:1px solid var(--green);display:flex;align-items:center;justify-content:center;font-size:.9rem;flex-shrink:0;">✓</div>
+            <p class="text-sm" style="margin:0;"><strong>Scales with data and compute</strong> — same recipe as LLMs, applied to robotics</p>
+          </div>
+        </div>
+      </div>
+      <div class="card" style="border:2px solid var(--orange);background:var(--orange-bg);">
+        <h3 class="mb-5" style="font-size:.88rem;color:var(--orange);">The Open Challenge</h3>
+        <p class="text-sm">Unlike language, robot actions are <strong>continuous and real-time</strong>. The autoregressive token-by-token approach used by LLMs is too slow and too coarse for precise motor control. This drives the need for specialized <strong>action heads</strong>.</p>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;text-align:center;">
+        <div class="card card-filled" style="padding:10px 6px;">
+          <div style="font-size:1rem;margin-bottom:3px;">🌐</div>
+          <div class="text-xs text-dim">Cross-embodiment<br>generalization</div>
+        </div>
+        <div class="card card-filled" style="padding:10px 6px;">
+          <div style="font-size:1rem;margin-bottom:3px;">⚡</div>
+          <div class="text-xs text-dim">Real-time control<br>&lt;100 ms / step</div>
+        </div>
+        <div class="card card-filled" style="padding:10px 6px;">
+          <div style="font-size:1rem;margin-bottom:3px;">📦</div>
+          <div class="text-xs text-dim">Scales with<br>data + compute</div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<!-- ════ SLIDE 5: Action Representation ════ -->
+<div class="slide">
+  <h2>Action Representation — The Hard Problem</h2>
+  <p style="margin-bottom:16px;">How should a VLA encode robot actions? The answer shapes inference speed, precision, and real-time viability.</p>
+  <div class="flex-grow" style="display:grid;grid-template-columns:1fr 1fr;gap:20px;">
+
+    <!-- LEFT: discrete bins -->
+    <div style="display:flex;flex-direction:column;gap:10px;">
+      <div class="card" style="border:2px solid #94a3b8;background:#f8f9fb;">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+          <span class="badge badge-dim">Approach 1</span>
+          <h3 style="margin:0;font-size:.9rem;">Discrete Bins</h3>
+          <span class="badge badge-dim" style="margin-left:auto;">RT-1 · RT-2 · OpenVLA</span>
+        </div>
+        <p class="text-sm">Each action dimension (joint angle, gripper) is bucketed into <strong>256 discrete bins</strong> and treated as a token — same as a word. The VLM predicts one action token at a time.</p>
+        <div style="margin-top:10px;background:var(--surface-muted);border-radius:6px;padding:9px 12px;">
+          <div class="text-xs text-dim" style="margin-bottom:5px;">Action chunk encoded as tokens:</div>
+          <div style="font-family:'JetBrains Mono',monospace;font-size:.72rem;color:var(--text);">[128, 201, 43, 187, 92, 255, 14]</div>
+          <div class="text-xs text-dim" style="margin-top:4px;">7 joints → 7 tokens → 7 autoregressive steps</div>
+        </div>
+        <div style="margin-top:10px;display:flex;flex-direction:column;gap:5px;">
+          <div style="display:flex;align-items:center;gap:7px;font-size:.8rem;color:var(--green-text);"><span>✓</span> Simple — reuses standard LLM training (cross-entropy)</div>
+          <div style="display:flex;align-items:center;gap:7px;font-size:.8rem;color:var(--green-text);"><span>✓</span> Works well for coarse manipulation tasks</div>
+          <div style="display:flex;align-items:center;gap:7px;font-size:.8rem;color:var(--red-text);"><span>✗</span> Loses precision — binning fails for dexterous tasks</div>
+          <div style="display:flex;align-items:center;gap:7px;font-size:.8rem;color:var(--red-text);"><span>✗</span> Slow autoregressive inference — hard to hit &lt;100 ms</div>
+        </div>
+      </div>
+      <div class="card card-filled" style="padding:10px 14px;">
+        <div class="text-xs text-dim" style="margin-bottom:5px;">VLA with discrete action head</div>
+        <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
+          <div class="flow-step" style="padding:5px 10px;font-size:.75rem;">📷 Images</div>
+          <span style="color:var(--intel-blue);">+</span>
+          <div class="flow-step" style="padding:5px 10px;font-size:.75rem;">📝 Language</div>
+          <span style="color:var(--intel-blue);">→</span>
+          <div class="flow-step" style="padding:5px 10px;font-size:.75rem;border-color:#94a3b8;">VLM</div>
+          <span style="color:var(--intel-blue);">→</span>
+          <div class="flow-step" style="padding:5px 10px;font-size:.75rem;border-color:#94a3b8;">[128, 201…]</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- RIGHT: continuous flow matching -->
+    <div style="display:flex;flex-direction:column;gap:10px;">
+      <div class="card card-accent" style="border-width:2px;">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+          <span class="badge badge-blue">Approach 2</span>
+          <h3 style="margin:0;font-size:.9rem;">Continuous Action Head</h3>
+          <span class="badge badge-green" style="margin-left:auto;">π0 · π0.5</span>
+        </div>
+        <p class="text-sm">The VLM backbone handles vision and language reasoning. A separate <strong>flow-matching action expert</strong> takes the VLM's output and iteratively denoises a continuous action trajectory from random noise.</p>
+        <div style="margin-top:10px;background:var(--intel-blue-10);border:1px solid var(--intel-blue);border-radius:6px;padding:9px 12px;">
+          <div class="text-xs text-dim" style="margin-bottom:5px;">Flow matching: noise → action</div>
+          <div style="display:flex;align-items:center;gap:4px;font-size:.72rem;font-family:'JetBrains Mono',monospace;">
+            <span style="color:var(--text-dim);">N(0,1)</span>
+            <span style="color:var(--intel-blue);">→ step 1 → step 2 → … →</span>
+            <span style="color:var(--text);font-weight:600;">[0.12, -0.34, 0.87…]</span>
+          </div>
+          <div class="text-xs text-dim" style="margin-top:4px;">Continuous floats — full precision, no binning loss</div>
+        </div>
+        <div style="margin-top:10px;display:flex;flex-direction:column;gap:5px;">
+          <div style="display:flex;align-items:center;gap:7px;font-size:.8rem;color:var(--green-text);"><span>✓</span> Full precision — no binning loss, handles dexterous tasks</div>
+          <div style="display:flex;align-items:center;gap:7px;font-size:.8rem;color:var(--green-text);"><span>✓</span> Flow matching is fast — as few as <strong>5 steps</strong> sufficient</div>
+          <div style="display:flex;align-items:center;gap:7px;font-size:.8rem;color:var(--green-text);"><span>✓</span> Knowledge insulation: VLM backbone kept frozen → better generalization</div>
+          <div style="display:flex;align-items:center;gap:7px;font-size:.8rem;color:var(--orange-text);"><span>⚠</span> Loop must be unrolled at export time for OpenVINO</div>
+        </div>
+      </div>
+      <div class="card card-filled" style="padding:10px 14px;">
+        <div class="text-xs text-dim" style="margin-bottom:5px;">π0.5 architecture (our benchmark target)</div>
+        <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
+          <div class="flow-step" style="padding:5px 10px;font-size:.75rem;">📷 Images</div>
+          <span style="color:var(--intel-blue);">+</span>
+          <div class="flow-step" style="padding:5px 10px;font-size:.75rem;">📝 Language</div>
+          <span style="color:var(--intel-blue);">→</span>
+          <div class="flow-step" style="padding:5px 10px;font-size:.75rem;border-color:var(--intel-blue);">VLM</div>
+          <span style="color:var(--intel-blue);">→</span>
+          <div class="flow-step" style="padding:5px 10px;font-size:.75rem;border-color:var(--orange);background:var(--orange-bg);">Flow ×N</div>
+          <span style="color:var(--intel-blue);">→</span>
+          <div class="flow-step" style="padding:5px 10px;font-size:.75rem;border-color:var(--green-text);background:var(--green-bg);">Actions</div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<!-- ════ SLIDE 5: OpenVLA vs π0.5 ════ -->
+<div class="slide">
+  <h2>VLA Models We Evaluated</h2>
+  <p class="mb-14">Two models were selected based on stakeholder input: <strong>OpenVLA</strong> (ECG team, embedded target) and <strong>π0.5</strong> (our primary B70 target, requested by Mark Iskra / Physical Intelligence contact).</p>
   <div class="grid-2 flex-grow" style="gap:20px;">
     <div style="display:flex;flex-direction:column;gap:11px;">
       <div class="card" style="border:2px solid var(--purple-text);">
@@ -630,7 +811,7 @@
 <div class="nav-bar">
   <button onclick="toggleSidebar()" title="Press M for menu">&#x2630;</button>
   <button onclick="prevSlide()">&#x25C0; Prev</button>
-  <span id="slideNum" style="min-width:54px;text-align:center;font-size:.8rem;">1 / 12</span>
+  <span id="slideNum" style="min-width:54px;text-align:center;font-size:.8rem;">1 / 14</span>
   <div class="progress-track"><div class="progress-fill" id="progressFill"></div></div>
   <button onclick="nextSlide()">Next &#x25B6;</button>
 </div>
@@ -639,7 +820,7 @@
 const slides = document.querySelectorAll('.slide');
 let current = 0, sidebarOpen = false;
 
-const slideTitles = ['Title','Agenda','Strategic Context','VLA Model Overview','Enabling on B70','PyTorch Profiling','ECG Comparison','OpenVINO Optimization','Benchmark Results','Breaking 100 ms','Live Demo','Q&A'];
+const slideTitles = ['Title','Agenda','Strategic Context','LLM → VLM → VLA','Action Representation','VLA Models Evaluated','Enabling on B70','PyTorch Profiling','ECG Comparison','OpenVINO Optimization','Benchmark Results','Breaking 100 ms','Live Demo','Q&A'];
 
 const sc = document.getElementById('sidebarItems');
 slideTitles.forEach((t,i) => {
