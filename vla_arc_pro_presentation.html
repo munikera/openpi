@@ -1,0 +1,734 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Enable VLA Models on Intel Arc Pro B70</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap');
+  :root {
+    --intel-blue:#0ea5e9; --intel-blue-dark:#0284c7; --intel-blue-light:#e0f2fe;
+    --intel-blue-10:rgba(14,165,233,0.10); --intel-blue-20:rgba(14,165,233,0.20);
+    --intel-yellow:#fdb517;
+    --bg:#ffffff; --bg-secondary:#f8f9fb; --surface-muted:#f3f5f8;
+    --text:#1a1f36; --text-secondary:#6b7394; --text-dim:#8f96b3;
+    --border:#e5e8f0; --border-light:#eef1f6;
+    --green:#00c758; --green-bg:#edfcf2; --green-text:#0a7c3e;
+    --yellow-bg:#fef9ec; --yellow-text:#92600a;
+    --orange:#f97316; --orange-bg:#fff4ec; --orange-text:#9a3c12;
+    --red:#dc2626; --red-bg:#fef2f2; --red-text:#991b1b;
+    --purple-bg:#f5f3ff; --purple-text:#5b21b6;
+    --gray-badge-bg:#f0f1f5; --gray-badge-text:#6b7394;
+  }
+  *{margin:0;padding:0;box-sizing:border-box;}
+  body{font-family:'Inter',-apple-system,BlinkMacSystemFont,sans-serif;background:var(--bg);color:var(--text);overflow:hidden;height:100vh;width:100vw;-webkit-font-smoothing:antialiased;}
+  .deck{position:relative;width:100vw;height:100vh;}
+  .slide{position:absolute;inset:0;display:flex;flex-direction:column;padding:56px 80px 64px;opacity:0;pointer-events:none;transition:opacity .35s ease;background:var(--bg);overflow:hidden;}
+  .slide.active{opacity:1;pointer-events:auto;}
+  h1{font-size:2.6rem;font-weight:800;letter-spacing:-.03em;color:var(--text);margin-bottom:8px;line-height:1.15;}
+  h2{font-size:1.75rem;font-weight:700;letter-spacing:-.02em;margin-bottom:28px;color:var(--text);padding-bottom:12px;border-bottom:2px solid var(--intel-blue);display:inline-block;}
+  h3{font-size:1rem;font-weight:600;margin-bottom:9px;color:var(--text);}
+  p,li{font-size:.94rem;line-height:1.65;color:var(--text-secondary);}
+  li{margin-bottom:4px;}
+  ul{padding-left:18px;}
+  li::marker{color:var(--intel-blue);}
+  strong{color:var(--text);font-weight:600;}
+  a{color:var(--intel-blue);text-decoration:none;}
+  code{font-family:'JetBrains Mono',monospace;font-size:.84em;background:var(--surface-muted);padding:1px 5px;border-radius:4px;color:var(--text);}
+  table{width:100%;border-collapse:collapse;font-size:.84rem;border:1px solid var(--border);border-radius:8px;overflow:hidden;}
+  th{text-align:left;padding:8px 12px;background:var(--text);color:#fff;font-weight:600;font-size:.73rem;text-transform:uppercase;letter-spacing:.06em;}
+  th:first-child{border-radius:8px 0 0 0;}th:last-child{border-radius:0 8px 0 0;}
+  td{padding:7px 12px;border-bottom:1px solid var(--border-light);color:var(--text-secondary);vertical-align:middle;}
+  tr:nth-child(even) td{background:var(--bg-secondary);}
+  tr:last-child td{border-bottom:none;}
+  tr:last-child td:first-child{border-radius:0 0 0 8px;}
+  tr:last-child td:last-child{border-radius:0 0 8px 0;}
+  .hl-row td{background:var(--intel-blue-10)!important;}
+  .badge{display:inline-block;padding:2px 9px;border-radius:20px;font-size:.7rem;font-weight:600;white-space:nowrap;}
+  .badge-green{background:var(--green-bg);color:var(--green-text);}
+  .badge-yellow{background:var(--yellow-bg);color:var(--yellow-text);}
+  .badge-orange{background:var(--orange-bg);color:var(--orange-text);}
+  .badge-blue{background:var(--intel-blue-light);color:var(--intel-blue-dark);}
+  .badge-red{background:var(--red-bg);color:var(--red-text);}
+  .badge-purple{background:var(--purple-bg);color:var(--purple-text);}
+  .badge-dim{background:var(--gray-badge-bg);color:var(--gray-badge-text);}
+  .card{background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:14px 18px;}
+  .card-accent{border-left:3px solid var(--intel-blue);}
+  .card-green{border-left:3px solid var(--green);}
+  .card-orange{border-left:3px solid var(--orange);}
+  .card-filled{background:var(--bg-secondary);border:1px solid var(--border-light);}
+  .grid-2{display:grid;grid-template-columns:1fr 1fr;gap:18px;}
+  .grid-3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px;}
+  .grid-4{display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:12px;}
+  .flex-grow{flex:1;min-height:0;}
+  .mt-8{margin-top:8px;}.mt-12{margin-top:12px;}.mt-16{margin-top:16px;}
+  .mb-8{margin-bottom:8px;}.mb-12{margin-bottom:12px;}.mb-16{margin-bottom:16px;}
+  .text-sm{font-size:.83rem;}.text-xs{font-size:.72rem;}
+  .text-dim{color:var(--text-dim);}.text-blue{color:var(--intel-blue);}
+  .text-green{color:var(--green-text);}.text-orange{color:var(--orange);}
+  .bold{font-weight:600;color:var(--text);}
+  .steps{display:flex;flex-direction:column;gap:10px;}
+  .step{display:flex;gap:11px;align-items:flex-start;}
+  .step-num{width:22px;height:22px;border-radius:50%;flex-shrink:0;background:var(--intel-blue);color:#fff;font-size:10px;font-weight:800;display:flex;align-items:center;justify-content:center;}
+  .step-body{flex:1;}
+  .step-title{font-weight:600;font-size:.88rem;margin-bottom:2px;}
+  .step-desc{font-size:.8rem;color:var(--text-secondary);line-height:1.5;}
+  .flow-step{background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:8px 14px;text-align:center;font-weight:500;font-size:.86rem;color:var(--text-secondary);}
+  .flow-arrow{text-align:center;color:var(--intel-blue);font-size:.95rem;line-height:1.2;padding:1px 0;}
+  .bar-chart{display:flex;flex-direction:column;gap:8px;}
+  .bar-row{display:grid;align-items:center;gap:9px;}
+  .bar-label{font-size:.8rem;color:var(--text-secondary);}
+  .bar-label strong{display:block;font-size:.85rem;color:var(--text);font-weight:600;}
+  .bar-track{background:var(--surface-muted);border-radius:4px;height:19px;overflow:hidden;}
+  .bar-fill{height:100%;border-radius:4px;display:flex;align-items:center;padding-left:8px;font-size:.7rem;font-weight:700;color:rgba(255,255,255,.92);transition:width .5s ease;}
+  .bar-val{font-size:.82rem;font-weight:700;text-align:right;white-space:nowrap;}
+  .stacked-bar{display:flex;height:22px;border-radius:6px;overflow:hidden;}
+  .seg-a{display:flex;align-items:center;justify-content:center;font-size:.7rem;font-weight:700;color:rgba(255,255,255,.9);}
+  .title-slide{justify-content:center;align-items:center;text-align:center;background:linear-gradient(180deg,#f0f6ff 0%,#ffffff 60%);}
+  .title-slide h1{font-size:2.9rem;font-weight:800;color:var(--text);letter-spacing:-.03em;}
+  .title-slide .blue-text{color:var(--intel-blue);}
+  .title-slide .subtitle{margin-top:11px;font-size:1.1rem;color:var(--text-secondary);font-weight:400;}
+  .title-slide .author{margin-top:38px;font-size:.93rem;color:var(--text-dim);font-weight:500;}
+  .series-tag{font-size:.76rem;font-weight:600;letter-spacing:.12em;text-transform:uppercase;color:var(--intel-blue);margin-bottom:14px;padding:4px 15px;background:var(--intel-blue-10);border-radius:20px;display:inline-block;}
+  .yellow-bar{width:54px;height:4px;background:var(--intel-yellow);border-radius:2px;margin:16px auto 0;}
+  .end-slide{justify-content:center;align-items:center;text-align:center;background:linear-gradient(180deg,#f0f6ff 0%,#ffffff 60%);}
+  .nav-bar{position:fixed;bottom:0;left:0;right:0;height:44px;background:var(--bg);border-top:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;padding:0 20px;z-index:100;font-size:.81rem;color:var(--text-dim);}
+  .nav-bar button{background:var(--bg);border:1px solid var(--border);color:var(--text);padding:5px 13px;border-radius:6px;cursor:pointer;font-size:.79rem;font-family:inherit;font-weight:500;transition:all .15s;}
+  .nav-bar button:hover{background:var(--surface-muted);border-color:var(--intel-blue);color:var(--intel-blue);}
+  .progress-track{flex:1;height:3px;background:var(--border-light);margin:0 16px;border-radius:2px;overflow:hidden;}
+  .progress-fill{height:100%;background:var(--intel-blue);transition:width .3s ease;border-radius:2px;}
+  .sidebar{position:fixed;top:0;left:0;width:240px;height:calc(100vh - 44px);background:var(--bg);border-right:1px solid var(--border);z-index:200;padding:12px 0;overflow-y:auto;transform:translateX(-240px);transition:transform .25s ease;}
+  .sidebar.open{transform:translateX(0);}
+  .sidebar-title{font-size:.66rem;font-weight:600;text-transform:uppercase;letter-spacing:.08em;color:var(--text-dim);padding:0 16px;margin-bottom:9px;}
+  .sidebar-item{display:flex;align-items:baseline;gap:8px;padding:7px 16px;cursor:pointer;font-size:.79rem;color:var(--text-secondary);transition:all .15s;border-left:3px solid transparent;}
+  .sidebar-item:hover{background:var(--surface-muted);color:var(--text);}
+  .sidebar-item.active{background:var(--intel-blue-10);color:var(--intel-blue-dark);border-left-color:var(--intel-blue);font-weight:600;}
+  .sidebar-item .num{font-size:.67rem;font-weight:600;color:var(--text-dim);min-width:17px;}
+  .sidebar-item.active .num{color:var(--intel-blue);}
+  .sidebar-overlay{position:fixed;inset:0;background:rgba(0,0,0,.12);z-index:190;display:none;}
+  .sidebar-overlay.open{display:block;}
+  ::-webkit-scrollbar{width:4px;}
+  ::-webkit-scrollbar-thumb{background:var(--border);border-radius:2px;}
+  @media print{body{overflow:visible;height:auto;}.deck{position:static;}.slide{position:static!important;opacity:1!important;pointer-events:auto!important;display:flex!important;page-break-after:always;height:100vh;padding:34px 52px 44px;}.nav-bar,.sidebar,.sidebar-overlay{display:none!important;}@page{size:landscape;margin:0;}}
+</style>
+</head>
+<body>
+<div class="deck" id="deck">
+
+<!-- ════ SLIDE 1: Title ════ -->
+<div class="slide title-slide active">
+  <div class="series-tag">Intel Arc Pro &nbsp;·&nbsp; Robotics AI Initiative</div>
+  <h1>Enable <span class="blue-text">VLA Models</span><br>on Intel Arc Pro</h1>
+  <div class="subtitle">π0.5 · OpenVLA · LIBERO &amp; DROID Benchmarks · OpenVINO Optimization</div>
+  <div class="yellow-bar"></div>
+  <div class="author">Arc Pro B70 &nbsp;·&nbsp; PyTorch XPU &nbsp;→&nbsp; OpenVINO &nbsp;·&nbsp; Real-Time MuJoCo Inference</div>
+</div>
+
+<!-- ════ SLIDE 2: Agenda ════ -->
+<div class="slide">
+  <h2>Agenda</h2>
+  <div class="flex-grow" style="display:flex;align-items:center;">
+    <div style="display:grid;grid-template-columns:auto 1fr;gap:10px 28px;font-size:1.1rem;width:100%;max-width:680px;">
+      <span class="bold" style="font-size:1.4rem;color:var(--intel-blue);">01</span><span class="bold">Strategic Context</span>
+      <span class="bold" style="font-size:1.4rem;color:var(--intel-blue);">02</span><span class="bold">VLA Model Overview</span>
+      <span class="bold" style="font-size:1.4rem;color:var(--intel-blue);">03</span><span class="bold">Enabling π0.5 on Arc Pro B70</span>
+      <span class="bold" style="font-size:1.4rem;color:var(--intel-blue);">04</span><span class="bold">PyTorch Profiling</span>
+      <span class="bold" style="font-size:1.4rem;color:var(--intel-blue);">05</span><span class="bold">ECG Team Comparison</span>
+      <span class="bold" style="font-size:1.4rem;color:var(--intel-blue);">06</span><span class="bold">OpenVINO Optimization</span>
+      <span class="bold" style="font-size:1.4rem;color:var(--intel-blue);">07</span><span class="bold">Benchmark Results</span>
+      <span class="bold" style="font-size:1.4rem;color:var(--intel-blue);">08</span><span class="bold">Breaking 100 ms</span>
+      <span class="bold" style="font-size:1.4rem;color:var(--intel-blue);">09</span><span class="bold">Live Demo</span>
+      <span class="bold" style="font-size:1.4rem;color:var(--intel-blue);">10</span><span class="bold">Q&amp;A</span>
+    </div>
+  </div>
+</div>
+
+<!-- ════ SLIDE 3: Strategic Context ════ -->
+<div class="slide">
+  <h2>Strategic Context</h2>
+  <div class="flex-grow" style="display:flex;flex-direction:column;gap:16px;">
+
+    <!-- Row 1: How it started -->
+    <div class="grid-2" style="gap:14px;">
+      <div class="card card-accent">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:7px;">
+          <div style="width:26px;height:26px;border-radius:50%;background:var(--intel-blue);color:#fff;font-size:.72rem;font-weight:800;display:flex;align-items:center;justify-content:center;flex-shrink:0;">1</div>
+          <h3 style="margin:0;font-size:.95rem;">Robotics Design Studio → Mark Iskra (OpenAI AE)</h3>
+        </div>
+        <p class="text-sm">We presented the <strong>Robotics Design Studio</strong> to Mark Iskra, Intel's Account Executive for OpenAI. He shared that <strong>OpenAI has had active discussions on robotics training and inference</strong>, and specifically asked us to focus on <strong>VLA models — OpenVLA and π0.5</strong> — as a priority workload for Arc Pro.</p>
+      </div>
+      <div class="card" style="border-left:3px solid var(--purple-text);">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:7px;">
+          <div style="width:26px;height:26px;border-radius:50%;background:var(--purple-text);color:#fff;font-size:.72rem;font-weight:800;display:flex;align-items:center;justify-content:center;flex-shrink:0;">2</div>
+          <h3 style="margin:0;font-size:.95rem;">ECG Team — Embedded Robotics on PTL / LNL</h3>
+        </div>
+        <p class="text-sm">Shortly after, the <strong>ECG team reached out</strong> to compare π0.5 inference metrics. They are enabling π0.5 on <strong>Panther Lake and Lunar Lake</strong> iGPU + NPU for embedded robotics. They needed a workstation-class reference point — which the B70 provides.</p>
+      </div>
+    </div>
+
+    <!-- Row 2: Our angle -->
+    <div class="card" style="border:2px solid var(--intel-blue);background:var(--intel-blue-10);">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+        <div style="width:26px;height:26px;border-radius:50%;background:var(--intel-blue);color:#fff;font-size:.72rem;font-weight:800;display:flex;align-items:center;justify-content:center;flex-shrink:0;">3</div>
+        <h3 style="margin:0;color:var(--intel-blue);">Our Angle — Arc Pro B70 as the VLA Development Workstation</h3>
+      </div>
+      <p class="text-sm">Would OpenAI or Physical Intelligence consider the Arc Pro B70 as a <strong>development workstation for building and testing VLA models</strong>? The results say yes: the B70 runs π0.5 at <strong>&gt;10 Hz</strong>, supports the full <strong>PyTorch XPU stack without any CUDA dependency</strong>, and at <strong>~$949</strong> is roughly half the price of the NVIDIA RTX PRO 4000 (~$1,679–$1,999) — which it now outperforms with OpenVINO.</p>
+    </div>
+
+    <!-- Row 3: 3 summary chips -->
+    <div class="grid-3" style="gap:12px;">
+      <div class="card card-filled text-center" style="padding:12px 8px;">
+        <div style="font-size:1.3rem;margin-bottom:4px;">🎯</div>
+        <div class="bold" style="font-size:.85rem;">Request</div>
+        <div class="text-xs text-dim mt-8">Enable OpenVLA &amp; π0.5 on Arc Pro — per Mark Iskra / OpenAI feedback</div>
+      </div>
+      <div class="card card-filled text-center" style="padding:12px 8px;">
+        <div style="font-size:1.3rem;margin-bottom:4px;">🤝</div>
+        <div class="bold" style="font-size:.85rem;">Teams</div>
+        <div class="text-xs text-dim mt-8">Arc Pro (B70 workstation) + ECG (PTL/LNL embedded) — complementary, not competing</div>
+      </div>
+      <div class="card card-filled text-center" style="padding:12px 8px;">
+        <div style="font-size:1.3rem;margin-bottom:4px;">💡</div>
+        <div class="bold" style="font-size:.85rem;">Why B70</div>
+        <div class="text-xs text-dim mt-8">&gt;10 Hz · full PyTorch XPU · no CUDA · $949 vs $1,699</div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<!-- ════ SLIDE 4: VLA Models ════ -->
+<div class="slide">
+  <h2>VLA Model Overview</h2>
+  <p class="mb-14">VLA models take <strong>camera images + language instructions</strong> → output <strong>robot joint actions</strong>, end-to-end. No hand-coded planning required.</p>
+  <div class="grid-2 flex-grow" style="gap:20px;">
+    <div style="display:flex;flex-direction:column;gap:11px;">
+      <div class="card" style="border:2px solid var(--purple-text);">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:9px;">
+          <h3 style="margin:0;">OpenVLA &nbsp;<span class="badge badge-purple">7B params</span></h3>
+          <span class="badge badge-dim">ECG Team Focus</span>
+        </div>
+        <ul class="text-sm">
+          <li><strong>Backbone:</strong> Prismatic VLM — SigLIP visual encoder + Llama-2 7B</li>
+          <li><strong>Training:</strong> Fine-tuned on Open-X-Embodiment (diverse robot data)</li>
+          <li><strong>Inference:</strong> Single autoregressive forward pass → discrete action tokens</li>
+          <li><strong>Target:</strong> PTL / LNL iGPU + NPU for embedded robotics (ECG team)</li>
+        </ul>
+      </div>
+      <div class="card" style="border:2px solid var(--intel-blue);">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:9px;">
+          <h3 style="margin:0;">π0.5 (pi0.5) &nbsp;<span class="badge badge-blue">3B params</span></h3>
+          <span class="badge badge-green">Our Focus</span>
+        </div>
+        <ul class="text-sm">
+          <li><strong>Backbone:</strong> PaliGemma — SigLIP + Gemma 2B language model</li>
+          <li><strong>Action head:</strong> Flow-matching expert denoises over N steps</li>
+          <li><strong>Inference:</strong> Prefix pass (fills KV cache) + N denoising steps per call</li>
+          <li><strong>Target:</strong> Arc Pro B70 workstation — 10+ Hz closed-loop control</li>
+        </ul>
+      </div>
+      <div class="card card-filled">
+        <h3 class="mb-8" style="font-size:.88rem;">Key Difference — Why π0.5 Needs Special OV Export</h3>
+        <table style="font-size:.78rem;border:none;">
+          <tbody>
+            <tr><td style="border:none;padding:3px 8px;color:var(--text);font-weight:600;">OpenVLA</td><td style="border:none;padding:3px 8px;">1 forward pass → 1 OV graph, straightforward</td></tr>
+            <tr><td style="border:none;padding:3px 8px;color:var(--text);font-weight:600;">π0.5</td><td style="border:none;padding:3px 8px;"><strong>N denoising steps</strong> per call → must <em>unroll loop at export time</em></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+    <div style="display:flex;flex-direction:column;justify-content:center;gap:6px;">
+      <h3 class="mb-10">π0.5 Inference Pipeline</h3>
+      <div class="flow-step" style="border:2px solid var(--intel-blue);">
+        📷 Camera images (224×224 uint8) &nbsp;+&nbsp; <em>"pick up the red block"</em>
+      </div>
+      <div class="flow-arrow">▼</div>
+      <div class="flow-step"><strong>SigLIP visual encoder</strong><div class="text-xs text-dim">196 patches / camera</div></div>
+      <div class="flow-arrow">▼</div>
+      <div class="flow-step"><strong>PaliGemma LM (Gemma 2B)</strong><div class="text-xs text-dim">Prefix pass — fills KV cache (once per call)</div></div>
+      <div class="flow-arrow">▼ &nbsp;<span class="text-xs" style="color:var(--orange);font-weight:700;">× N steps</span></div>
+      <div class="flow-step" style="border:2px solid var(--orange);background:var(--orange-bg);">
+        <strong>Flow-Matching Denoiser</strong>
+        <div class="text-xs text-dim">noise → smooth action trajectory (N=10 default)</div>
+      </div>
+      <div class="flow-arrow">▼</div>
+      <div class="flow-step" style="border:2px solid var(--green-text);background:var(--green-bg);">
+        🤖 Robot actions [horizon × action_dim]
+      </div>
+      <div class="grid-2 mt-10" style="gap:8px;">
+        <div class="card card-filled text-center" style="padding:9px;">
+          <div class="text-xs text-dim">LIBERO model</div>
+          <div style="font-size:.82rem;font-weight:600;">3 cams · horizon 10 · dim 7</div>
+        </div>
+        <div class="card card-filled text-center" style="padding:9px;">
+          <div class="text-xs text-dim">DROID model</div>
+          <div style="font-size:.82rem;font-weight:600;">2 cams · horizon 15 · dim 32</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ════ SLIDE 5: Enabling on B70 ════ -->
+<div class="slide">
+  <h2>Enabling π0.5 on Arc Pro B70</h2>
+  <div class="grid-2 flex-grow" style="gap:20px;">
+    <div style="display:flex;flex-direction:column;gap:12px;">
+      <h3 class="mb-4">XPU Patch Summary — minimal changes to upstream openpi</h3>
+      <table>
+        <thead><tr><th>File</th><th>Change</th></tr></thead>
+        <tbody>
+          <tr class="hl-row"><td><code>pyproject.toml</code></td><td>torch 2.10.0+xpu; remove jax[cuda12] → jax 0.5.3; add pytorch-xpu index</td></tr>
+          <tr><td><code>policy_config.py</code></td><td>XPU auto-detection: xpu &gt; cuda &gt; cpu fallback</td></tr>
+          <tr><td><code>examples/libero/requirements.txt</code></td><td>Comment out CUDA torch (conflicts with XPU venv)</td></tr>
+          <tr><td><code>third_party/libero/*</code></td><td>Add <code>__init__.py</code>; fix <code>torch.load weights_only=False</code> (submodule)</td></tr>
+        </tbody>
+      </table>
+      <div class="card card-accent">
+        <h3 class="mb-6" style="font-size:.9rem;">Runtime Architecture — Why a Worker Subprocess?</h3>
+        <p class="text-sm">Loading the 3B model onto XPU installs <strong>process-wide Level-Zero memory hooks</strong> that conflict with MuJoCo's osmesa CPU allocator → segfault. Fix: LIBERO runs in a clean subprocess that never imports torch.</p>
+        <div style="display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:8px;margin-top:10px;">
+          <div class="card card-filled text-center" style="padding:9px;">
+            <div class="bold text-sm" style="color:var(--intel-blue);">Main Process</div>
+            <div class="text-xs text-dim mt-8">π0.5 on XPU<br>PyTorch / OpenVINO</div>
+          </div>
+          <div style="text-align:center;color:var(--intel-blue);font-size:1.1rem;">⇄<br><span class="text-xs text-dim">stdin/stdout<br>pickle IPC</span></div>
+          <div class="card card-filled text-center" style="padding:9px;">
+            <div class="bold text-sm" style="color:var(--green-text);">Worker Subprocess</div>
+            <div class="text-xs text-dim mt-8">LIBERO MuJoCo<br>No torch imported</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:12px;">
+      <h3 class="mb-4">torch.compile Mode Comparison <span class="text-xs text-dim">(DROID, 10 steps)</span></h3>
+      <div class="bar-chart" id="compile-chart"></div>
+      <div style="display:flex;align-items:center;gap:7px;font-size:.76rem;color:var(--orange);font-weight:600;margin-top:2px;">
+        <div style="width:18px;height:2px;background:var(--orange);border-radius:2px;"></div>
+        100 ms control loop target
+      </div>
+      <div class="card card-accent mt-8">
+        <h3 class="mb-5" style="font-size:.88rem;">💡 GPU time is fixed (~79 ms) — only CPU overhead varies</h3>
+        <p class="text-sm">All four compile modes execute <strong>~79 ms of GPU work</strong>. The 12 ms spread is entirely <strong>CPU dispatch overhead</strong>. <code>max-autotune-no-cudagraphs</code> wins by skipping CUDA Graph capture (which doesn't exist on XPU) — gives <strong>lowest CPU overhead: 37.5 ms</strong>.</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ════ SLIDE 6: Profiling ════ -->
+<div class="slide">
+  <h2>PyTorch Profiling — Finding the Bottleneck</h2>
+  <div class="grid-2 flex-grow" style="gap:20px;">
+    <div style="display:flex;flex-direction:column;gap:12px;">
+      <h3 class="mb-4">GPU Kernel Breakdown — top kernels (ms / iter)</h3>
+      <div class="bar-chart" id="kernel-chart"></div>
+      <div class="card card-filled mt-4">
+        <div class="grid-4" style="gap:8px;text-align:center;">
+          <div><div style="font-size:1.3rem;font-weight:800;color:var(--intel-blue);">72%</div><div class="text-xs text-dim">GEMM</div></div>
+          <div><div style="font-size:1.3rem;font-weight:800;color:var(--purple-text);">9%</div><div class="text-xs text-dim">FFN SiGLU</div></div>
+          <div><div style="font-size:1.3rem;font-weight:800;color:var(--orange);">4%</div><div class="text-xs text-dim">GELU+mul</div></div>
+          <div><div style="font-size:1.3rem;font-weight:800;color:var(--green-text);">4%</div><div class="text-xs text-dim">RoPE</div></div>
+        </div>
+      </div>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:14px;justify-content:center;">
+      <h3 class="mb-8">Wall-clock = GPU time + CPU overhead</h3>
+      <div class="mb-10">
+        <div class="text-sm text-dim mb-6">Arc Pro B70 — max-autotune-no-cudagraphs (117 ms total)</div>
+        <div class="stacked-bar">
+          <div class="seg-a" style="width:68%;background:#00a854;">GPU 79.8 ms</div>
+          <div class="seg-a" style="width:32%;background:#f97316;">CPU 37.5 ms</div>
+        </div>
+      </div>
+      <div class="mb-14">
+        <div class="text-sm text-dim mb-6">NVIDIA RTX PRO 4000 — CUDA (83 ms total)</div>
+        <div class="stacked-bar">
+          <div class="seg-a" style="width:92%;background:#00a854;">GPU 76.3 ms</div>
+          <div class="seg-a" style="width:8%;background:#f97316;">~7</div>
+        </div>
+      </div>
+      <div class="card card-orange">
+        <h3 class="mb-5" style="font-size:.88rem;color:var(--orange);">⚠️ The Problem: CPU Dispatch Gap</h3>
+        <p class="text-sm">NVIDIA benefits from mature <strong>CUDA Graph</strong> support — near-zero CPU overhead. XPU dispatch overhead is <strong>~38 ms vs ~7 ms</strong> on NVIDIA. This is the gap OpenVINO closes by compiling the full graph ahead of time.</p>
+      </div>
+      <div class="card card-filled">
+        <p class="text-sm"><strong>Key insight:</strong> B70 GPU compute is already competitive with RTX PRO 4000 (79.8 ms vs 76.3 ms). The entire performance gap is <em>software overhead</em>, not hardware capability.</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ════ SLIDE 7: ECG Comparison ════ -->
+<div class="slide">
+  <h2>ECG Team Comparison — Embedded vs Workstation</h2>
+  <p class="mb-14">The ECG team enables <strong>OpenVLA on PTL &amp; LNL</strong> for embedded robotics. Our B70 work targets workstation-class inference. <span style="color:var(--green-text);font-weight:600;">Complementary, not competing.</span></p>
+  <div class="flex-grow" style="display:flex;flex-direction:column;gap:14px;">
+    <table>
+      <thead><tr><th></th><th>Arc Pro B70 (Our Work)</th><th>PTL / LNL (ECG Team)</th><th>RTX PRO 4000 (NVIDIA)</th></tr></thead>
+      <tbody>
+        <tr><td class="bold">Segment</td><td>Workstation / Edge</td><td>Embedded / Mobile Robotics</td><td>Workstation</td></tr>
+        <tr><td class="bold">GPU</td><td>Arc Pro B70 dGPU</td><td>Panther Lake / Lunar Lake iGPU + NPU</td><td>RTX PRO 4000 Ada dGPU</td></tr>
+        <tr><td class="bold">Model</td><td>π0.5 (3B params)</td><td>OpenVLA (7B) / smaller VLAs</td><td>π0.5 (3B params)</td></tr>
+        <tr><td class="bold">Framework</td><td>PyTorch XPU + OpenVINO</td><td>OpenVINO (NPU + iGPU)</td><td>PyTorch CUDA</td></tr>
+        <tr><td class="bold">Benchmark</td><td>LIBERO + DROID</td><td>SimplerEnv / custom tasks</td><td>LIBERO (4 suites)</td></tr>
+        <tr class="hl-row"><td class="bold">Latency</td><td><strong>88–111 ms (OV FP32) ✓</strong></td><td>~200–500 ms (lower power budget)</td><td>114–115 ms (PyTorch)</td></tr>
+        <tr><td class="bold">Price</td><td style="color:var(--green-text);font-weight:700;">~$949</td><td>Embedded OEM</td><td style="color:var(--orange);font-weight:700;">~$1,699–$1,999</td></tr>
+      </tbody>
+    </table>
+    <div class="grid-2" style="gap:14px;">
+      <div class="card card-accent">
+        <h3 class="mb-5" style="font-size:.88rem;">B70 — High-Throughput Robot Control</h3>
+        <p class="text-sm">Targets complex manipulation tasks requiring <strong>&lt;100 ms at ≥10 Hz</strong>. π0.5 covers DROID (76,000+ trajectories, 50+ robot types) and LIBERO simulation. B70 + OpenVINO <strong>beats RTX PRO 4000 PyTorch at nearly half the price</strong>.</p>
+      </div>
+      <div class="card" style="border-left:3px solid var(--purple-text);">
+        <h3 class="mb-5" style="font-size:.88rem;">PTL/LNL — Power-Constrained Mobile</h3>
+        <p class="text-sm">Targets <strong>mobile robots, cobots, drones</strong> where dGPU is unavailable. OpenVLA on NPU+iGPU covers a different deployment tier. Together, Intel has a <strong>complete stack from embedded to workstation</strong>.</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ════ SLIDE 8: OpenVINO ════ -->
+<div class="slide">
+  <h2>OpenVINO Optimization — Export Pipeline</h2>
+  <div class="grid-2 flex-grow" style="gap:20px;">
+    <div style="display:flex;flex-direction:column;gap:11px;">
+      <div class="card card-accent">
+        <h3 class="mb-5" style="font-size:.9rem;">Strategy: Unroll + Monolithic Graph</h3>
+        <p class="text-sm">The denoising loop runs N times per call. Standard export would need N Python calls → keeping CPU overhead. Instead, the <strong>N-step loop is unrolled at ONNX export time</strong>. KV cache stays internal. <strong>One <code>infer()</code> call</strong> covers prefix + all N denoising steps.</p>
+      </div>
+      <div class="steps">
+        <div class="step">
+          <div class="step-num">1</div>
+          <div class="step-body">
+            <div class="step-title">Cast bf16 → fp32 &nbsp;<span class="badge badge-dim">PyTorch</span></div>
+            <div class="step-desc">All model params/buffers cast before tracing. ONNX opset 17 doesn't natively support bfloat16.</div>
+          </div>
+        </div>
+        <div class="step">
+          <div class="step-num">2</div>
+          <div class="step-body">
+            <div class="step-title">torch.onnx.export &nbsp;<span class="badge badge-dim">opset 17, TorchScript</span></div>
+            <div class="step-desc">Legacy exporter with <code>ONNX_ATEN_FALLBACK</code>. Loop unrolled into static graph. ~2–5 GB file. Requires <code>ulimit -n 65536</code>.</div>
+          </div>
+        </div>
+        <div class="step">
+          <div class="step-num">3</div>
+          <div class="step-body">
+            <div class="step-title">ov.convert_model → OV IR FP32 &nbsp;<span class="badge badge-dim">OpenVINO 2025.4</span></div>
+            <div class="step-desc"><code>ov.save_model(compress_to_fp16=False)</code> → model.xml + model.bin.</div>
+          </div>
+        </div>
+        <div class="step">
+          <div class="step-num" style="background:var(--green-text);">4</div>
+          <div class="step-body">
+            <div class="step-title">Compile on Arc Pro B70 GPU Plugin</div>
+            <div class="step-desc"><code>GPU_ENABLE_SDPA_OPTIMIZATION: YES</code>. First compile ~30–60 s. One <code>infer_req.infer()</code> call = full inference.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:12px;justify-content:center;">
+      <h3 class="mb-8">Why OV Eliminates CPU Overhead</h3>
+      <div style="display:grid;gap:8px;">
+        <div style="display:grid;grid-template-columns:110px 1fr;gap:9px;align-items:center;padding:9px 13px;background:var(--bg-secondary);border:1px solid var(--border);border-radius:8px;">
+          <div class="text-sm bold">PyTorch XPU</div>
+          <div>
+            <div class="stacked-bar" style="height:16px;">
+              <div class="seg-a" style="width:68%;background:#00a854;font-size:.65rem;">GPU 79ms</div>
+              <div class="seg-a" style="width:32%;background:#f97316;font-size:.65rem;">CPU 38ms</div>
+            </div>
+            <div class="text-xs text-dim mt-6">117 ms — 4,793 kernel launches per iter</div>
+          </div>
+        </div>
+        <div style="display:grid;grid-template-columns:110px 1fr;gap:9px;align-items:center;padding:9px 13px;background:var(--intel-blue-10);border:1px solid var(--intel-blue);border-radius:8px;">
+          <div class="text-sm bold" style="color:var(--intel-blue);">OpenVINO FP32</div>
+          <div>
+            <div class="stacked-bar" style="height:16px;">
+              <div class="seg-a" style="width:100%;background:#0071c5;font-size:.65rem;">~88 ms — single compiled graph call</div>
+            </div>
+            <div class="text-xs text-dim mt-6">88 ms — 1 infer() call, near-zero CPU overhead</div>
+          </div>
+        </div>
+      </div>
+      <div class="card card-filled mt-4">
+        <h3 class="mb-6" style="font-size:.86rem;">OV Model Inputs (DROID)</h3>
+        <table style="font-size:.76rem;border:none;">
+          <tbody>
+            <tr><td style="border:none;padding:2px 8px;font-weight:600;color:var(--text);"><code>images</code></td><td style="border:none;padding:2px 8px;">[1, 2, 3, 224, 224] float32</td></tr>
+            <tr><td style="border:none;padding:2px 8px;font-weight:600;color:var(--text);"><code>lang_tokens</code></td><td style="border:none;padding:2px 8px;">[1, 200] int64</td></tr>
+            <tr><td style="border:none;padding:2px 8px;font-weight:600;color:var(--text);"><code>state</code></td><td style="border:none;padding:2px 8px;">[1, 8] float32 — robot joint + gripper</td></tr>
+            <tr><td style="border:none;padding:2px 8px;font-weight:600;color:var(--text);"><code>noise</code></td><td style="border:none;padding:2px 8px;">[1, 15, 32] float32 — sampled N(0,1)</td></tr>
+            <tr><td style="border:none;padding:2px 8px;font-weight:600;color:var(--text);">→ <code>actions</code></td><td style="border:none;padding:2px 8px;">[1, 15, 32] float32</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ════ SLIDE 9: Benchmark Results ════ -->
+<div class="slide">
+  <h2>Benchmark Results — LIBERO &amp; DROID</h2>
+  <div style="display:flex;flex-direction:column;gap:16px;" class="flex-grow">
+    <div>
+      <h3 class="mb-6">DROID — PyTorch vs OpenVINO FP32 (Arc Pro B70)</h3>
+      <div class="bar-chart" id="droid-chart"></div>
+      <div style="display:inline-flex;align-items:center;gap:6px;margin-top:7px;padding:3px 11px;background:var(--green-bg);border:1px solid var(--green);border-radius:20px;font-size:.76rem;font-weight:700;color:var(--green-text);">
+        ▲ +34.6% throughput &nbsp;·&nbsp; −25.6% latency &nbsp;·&nbsp; ±0.7 ms std dev (3× more stable)
+      </div>
+    </div>
+    <div>
+      <h3 class="mb-6">LIBERO — All 4 Suites, 10 denoising steps, 5 trials/task</h3>
+      <table>
+        <thead><tr><th>Suite</th><th>B70 · PyTorch</th><th>RTX PRO 4000 · PyTorch</th><th>B70 · OpenVINO FP32</th><th>B70 OV vs RTX</th><th>Success (OV)</th></tr></thead>
+        <tbody>
+          <tr><td class="bold">LIBERO-Spatial</td><td>129.9 ms · 7.70 Hz</td><td>114.8 ms · 8.71 Hz</td><td class="hl-row"><strong>112.6 ms · 8.88 Hz</strong></td><td style="color:var(--green-text);font-weight:700;">−2.3 ms ✓</td><td><span class="badge badge-green">100%</span></td></tr>
+          <tr><td class="bold">LIBERO-Object</td> <td>130.4 ms · 7.67 Hz</td><td>115.1 ms · 8.69 Hz</td><td class="hl-row"><strong>110.5 ms · 9.05 Hz</strong></td><td style="color:var(--green-text);font-weight:700;">−4.6 ms ✓</td><td><span class="badge badge-green">98%</span></td></tr>
+          <tr><td class="bold">LIBERO-Goal</td>   <td>130.2 ms · 7.68 Hz</td><td>114.9 ms · 8.70 Hz</td><td class="hl-row"><strong>111.6 ms · 8.96 Hz</strong></td><td style="color:var(--green-text);font-weight:700;">−3.3 ms ✓</td><td><span class="badge badge-green">96%</span></td></tr>
+          <tr><td class="bold">LIBERO-10</td>     <td>130.1 ms · 7.68 Hz</td><td>115.1 ms · 8.68 Hz</td><td class="hl-row"><strong>110.3 ms · 9.07 Hz</strong></td><td style="color:var(--green-text);font-weight:700;">−4.8 ms ✓</td><td><span class="badge badge-green">90%</span></td></tr>
+          <tr><td class="bold">Average</td><td>130.2 ms · 7.68 Hz</td><td>115.0 ms · 8.70 Hz</td><td style="background:var(--intel-blue-10);"><strong>111.3 ms · 9.00 Hz</strong></td><td style="color:var(--green-text);font-weight:700;">−3.7 ms ✓</td><td>—</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="card card-accent" style="padding:10px 16px;">
+      <p class="text-sm"><strong>B70 + OpenVINO FP32 beats RTX PRO 4000 PyTorch across all four LIBERO suites</strong> with equal or better task success rates — at $949 vs $1,699–$1,999.</p>
+    </div>
+  </div>
+</div>
+
+<!-- ════ SLIDE 10: Sub-100ms ════ -->
+<div class="slide">
+  <h2>Breaking 100 ms — 5-Step Denoising</h2>
+  <div class="grid-2 flex-grow" style="gap:20px;">
+    <div style="display:flex;flex-direction:column;gap:12px;">
+      <div class="card card-accent">
+        <h3 class="mb-5" style="font-size:.9rem;">Flow Matching is Robust to Fewer Steps</h3>
+        <p class="text-sm">Unlike diffusion models, flow-matching trajectories are nearly straight lines in data space. <strong>5 steps ≈ same success rate as 10 steps</strong> on all LIBERO benchmarks (confirmed by BLURR paper and Physical Intelligence ablations), with ~1.6× speedup.</p>
+      </div>
+      <h3 class="mb-4">Inference Speed vs Denoising Steps</h3>
+      <div class="bar-chart" id="steps-chart"></div>
+      <div style="display:flex;align-items:center;gap:7px;font-size:.76rem;color:var(--orange);font-weight:600;margin-top:2px;">
+        <div style="width:18px;height:2px;background:var(--orange);border-radius:2px;"></div>
+        100 ms target
+      </div>
+      <div class="card card-filled mt-4">
+        <div style="font-family:'JetBrains Mono',monospace;font-size:.72rem;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:9px 11px;color:var(--text-secondary);line-height:1.8;">
+          python scripts/convert_libero_openvino.py \<br>
+          &nbsp;&nbsp;--export-onnx --onnx-to-ov --num-steps 5 \<br>
+          &nbsp;&nbsp;--ov-fp32-dir profiler_output/libero_fp32_steps5
+        </div>
+      </div>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:12px;">
+      <h3 class="mb-4">Full Configuration Comparison</h3>
+      <table>
+        <thead><tr><th>Configuration</th><th>Latency</th><th>Hz</th><th>vs B70 PyTorch</th></tr></thead>
+        <tbody>
+          <tr><td>B70 · PyTorch · 10 steps</td><td>~130 ms</td><td>7.7</td><td class="text-dim">baseline</td></tr>
+          <tr><td>RTX PRO 4000 · PyTorch · 10 steps</td><td>~115 ms</td><td>8.7</td><td style="color:var(--orange);">−12%</td></tr>
+          <tr class="hl-row"><td><strong>B70 · OpenVINO FP32 · 10 steps</strong></td><td><strong>88–111 ms</strong></td><td><strong>9–11</strong></td><td style="color:var(--green-text);font-weight:700;">−15 to −26%</td></tr>
+          <tr style="background:var(--green-bg);"><td><strong>B70 · OpenVINO FP32 · 5 steps</strong></td><td style="color:var(--green-text);font-weight:800;">~55–70 ms ✓</td><td style="color:var(--green-text);font-weight:800;">14–18</td><td style="color:var(--green-text);font-weight:700;">−46 to −57% (proj.)</td></tr>
+        </tbody>
+      </table>
+      <div class="grid-2" style="gap:10px;">
+        <div class="card text-center" style="border:2px solid var(--green-text);padding:12px;">
+          <div style="font-size:1.8rem;font-weight:800;color:var(--green-text);">~55ms</div>
+          <div class="text-xs text-dim">DROID · OV · 5 steps</div>
+          <div style="font-size:.9rem;font-weight:700;margin-top:6px;">~18 Hz</div>
+        </div>
+        <div class="card text-center" style="border:2px solid var(--intel-blue);padding:12px;">
+          <div style="font-size:1.8rem;font-weight:800;color:var(--intel-blue);">~70ms</div>
+          <div class="text-xs text-dim">LIBERO · OV · 5 steps</div>
+          <div style="font-size:.9rem;font-weight:700;margin-top:6px;">~14 Hz</div>
+        </div>
+      </div>
+      <div class="card card-filled">
+        <p class="text-sm"><strong>run_libero_xpu.py:</strong> pass <code>--args.num-steps 5</code> alongside <code>--args.ov-model-path profiler_output/libero_fp32_steps5/model.xml</code>. OV model must be exported with matching <code>--num-steps 5</code>.</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ════ SLIDE 11: Live Demo ════ -->
+<div class="slide">
+  <h2>Live Demo — Real-Time MuJoCo Inference</h2>
+  <div class="grid-2 flex-grow" style="gap:20px;">
+    <div style="display:flex;flex-direction:column;gap:10px;">
+      <div style="background:var(--surface-muted);border:2px dashed var(--border);border-radius:10px;display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:260px;gap:8px;">
+        <div style="font-size:3rem;opacity:.35;">▶</div>
+        <div class="bold" style="font-size:.95rem;">π0.5 Live Inference — LIBERO-Spatial</div>
+        <div class="text-sm text-dim text-center">Arc Pro B70 · OpenVINO FP32 · ~9 Hz<br>"pick up the red block and place it on the plate"<br><br><em>Insert rollout_*.mp4 from data/libero/videos/</em></div>
+      </div>
+      <div class="grid-2" style="gap:9px;">
+        <div class="card text-center" style="padding:10px;border-color:var(--green-text);">
+          <div style="font-size:1.7rem;font-weight:800;color:var(--green-text);">100%</div>
+          <div class="text-xs text-dim">LIBERO-Spatial success</div>
+        </div>
+        <div class="card text-center" style="padding:10px;border-color:var(--intel-blue);">
+          <div style="font-size:1.7rem;font-weight:800;color:var(--intel-blue);">9.0 Hz</div>
+          <div class="text-xs text-dim">B70 · OpenVINO FP32</div>
+        </div>
+      </div>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:11px;">
+      <h3 class="mb-4">Run Commands</h3>
+      <div class="card card-filled" style="font-family:'JetBrains Mono',monospace;font-size:.71rem;line-height:1.85;padding:14px 16px;">
+        <span style="color:var(--text-dim)"># Environment setup</span><br>
+        source .venv/bin/activate<br>
+        export LD_LIBRARY_PATH="$(pwd)/.venv/lib:$LD_LIBRARY_PATH"<br>
+        export MUJOCO_GL=osmesa &amp;&amp; export NUMBA_DISABLE_JIT=1<br><br>
+        <span style="color:var(--text-dim)"># PyTorch XPU baseline</span><br>
+        <span style="color:var(--intel-blue);">ZE_AFFINITY_MASK=2 python run_libero_xpu.py \<br>
+        &nbsp;&nbsp;--args.task-suite-name all --args.num-trials-per-task 5</span><br><br>
+        <span style="color:var(--text-dim)"># OpenVINO 10-step</span><br>
+        <span style="color:var(--intel-blue);">python run_libero_xpu.py \<br>
+        &nbsp;&nbsp;--args.ov-model-path profiler_output/libero_fp32/model.xml \<br>
+        &nbsp;&nbsp;--args.task-suite-name all</span><br><br>
+        <span style="color:var(--text-dim)"># OpenVINO 5-step — breaks 100 ms</span><br>
+        <span style="color:var(--green-text);font-weight:600;">python run_libero_xpu.py \<br>
+        &nbsp;&nbsp;--args.ov-model-path profiler_output/libero_fp32_steps5/model.xml \<br>
+        &nbsp;&nbsp;--args.num-steps 5 --args.task-suite-name all</span>
+      </div>
+      <div class="card card-accent">
+        <h3 class="mb-5" style="font-size:.88rem;">Live Web Viewer</h3>
+        <p class="text-sm">Streams simulation as MJPEG to browser. Port-forward: <code>ssh -L 9000:localhost:9000 devcloud@...</code> → open <strong>http://localhost:9000</strong>. Auto-refreshing, shows task overlay and episode counter.</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ════ SLIDE 12: Q&A ════ -->
+<div class="slide end-slide">
+  <div class="series-tag">Intel Arc Pro &nbsp;·&nbsp; Robotics AI</div>
+  <h1>Thank You</h1>
+  <p style="margin-top:9px;">Questions &amp; Discussion</p>
+  <div class="yellow-bar"></div>
+  <div style="margin-top:32px;display:grid;grid-template-columns:repeat(3,1fr);gap:14px;max-width:620px;">
+    <div class="card card-filled text-center" style="padding:12px 8px;">
+      <div style="font-size:1.5rem;font-weight:800;color:var(--intel-blue);">−26%</div>
+      <div class="text-xs text-dim">DROID latency<br>PyTorch → OpenVINO</div>
+    </div>
+    <div class="card card-filled text-center" style="padding:12px 8px;">
+      <div style="font-size:1.5rem;font-weight:800;color:var(--green-text);">11.3 Hz</div>
+      <div class="text-xs text-dim">DROID throughput<br>B70 · OV FP32</div>
+    </div>
+    <div class="card card-filled text-center" style="padding:12px 8px;">
+      <div style="font-size:1.5rem;font-weight:800;color:var(--orange);">$949</div>
+      <div class="text-xs text-dim">Arc Pro B70<br>vs $1,699 RTX PRO</div>
+    </div>
+  </div>
+</div>
+
+</div><!-- end deck -->
+
+<div class="sidebar-overlay" id="sidebarOverlay" onclick="toggleSidebar()"></div>
+<div class="sidebar" id="sidebar">
+  <div class="sidebar-title">Slides</div>
+  <div id="sidebarItems"></div>
+</div>
+
+<div class="nav-bar">
+  <button onclick="toggleSidebar()" title="Press M for menu">&#x2630;</button>
+  <button onclick="prevSlide()">&#x25C0; Prev</button>
+  <span id="slideNum" style="min-width:54px;text-align:center;font-size:.8rem;">1 / 12</span>
+  <div class="progress-track"><div class="progress-fill" id="progressFill"></div></div>
+  <button onclick="nextSlide()">Next &#x25B6;</button>
+</div>
+
+<script>
+const slides = document.querySelectorAll('.slide');
+let current = 0, sidebarOpen = false;
+
+const slideTitles = ['Title','Agenda','Strategic Context','VLA Model Overview','Enabling on B70','PyTorch Profiling','ECG Comparison','OpenVINO Optimization','Benchmark Results','Breaking 100 ms','Live Demo','Q&A'];
+
+const sc = document.getElementById('sidebarItems');
+slideTitles.forEach((t,i) => {
+  const el = document.createElement('div');
+  el.className = 'sidebar-item' + (i===0?' active':'');
+  el.innerHTML = `<span class="num">${String(i+1).padStart(2,'0')}</span><span>${t}</span>`;
+  el.onclick = () => { showSlide(i); closeSidebar(); };
+  sc.appendChild(el);
+});
+
+function showSlide(n) {
+  slides[current].classList.remove('active');
+  current = Math.max(0, Math.min(n, slides.length-1));
+  slides[current].classList.add('active');
+  document.getElementById('slideNum').textContent = `${current+1} / ${slides.length}`;
+  document.getElementById('progressFill').style.width = `${(current+1)/slides.length*100}%`;
+  document.querySelectorAll('.sidebar-item').forEach((el,i) => el.classList.toggle('active', i===current));
+}
+function nextSlide() { showSlide(current+1); }
+function prevSlide() { showSlide(current-1); }
+function toggleSidebar() {
+  sidebarOpen = !sidebarOpen;
+  document.getElementById('sidebar').classList.toggle('open', sidebarOpen);
+  document.getElementById('sidebarOverlay').classList.toggle('open', sidebarOpen);
+}
+function closeSidebar() {
+  sidebarOpen = false;
+  document.getElementById('sidebar').classList.remove('open');
+  document.getElementById('sidebarOverlay').classList.remove('open');
+}
+document.addEventListener('keydown', e => {
+  if (e.key==='Escape'&&sidebarOpen){closeSidebar();return;}
+  if (e.key==='m'||e.key==='M'){toggleSidebar();return;}
+  if (sidebarOpen) return;
+  if (e.key==='ArrowRight'||e.key==='ArrowDown'||e.key===' '){e.preventDefault();nextSlide();}
+  if (e.key==='ArrowLeft'||e.key==='ArrowUp'){e.preventDefault();prevSlide();}
+  if (e.key==='Home') showSlide(0);
+  if (e.key==='End')  showSlide(slides.length-1);
+});
+let tx=0;
+document.addEventListener('touchstart', e => { tx=e.touches[0].clientX; });
+document.addEventListener('touchend',   e => { const d=e.changedTouches[0].clientX-tx; if(Math.abs(d)>50) d<0?nextSlide():prevSlide(); });
+
+function renderBars(id, rows, maxVal, cols) {
+  const c = document.getElementById(id);
+  if (!c) return;
+  rows.forEach(r => {
+    const pct = Math.min(r.val/maxVal*100,100).toFixed(1);
+    const div = document.createElement('div');
+    div.className = 'bar-row';
+    div.style.gridTemplateColumns = cols||'190px 1fr 85px';
+    div.innerHTML = `
+      <div class="bar-label"><strong>${r.label}</strong>${r.sub?`<br><span style="font-size:.73rem">${r.sub}</span>`:''}</div>
+      <div class="bar-track"><div class="bar-fill" style="width:${pct}%;background:${r.color||'var(--intel-blue)'};">${r.val>=maxVal*.35?r.display||'':''}</div></div>
+      <div class="bar-val" style="color:${r.color||'var(--intel-blue)'};">${r.display||r.val}</div>`;
+    c.appendChild(div);
+  });
+}
+
+renderBars('compile-chart',[
+  {label:'max-autotune-no-cudagraphs',sub:'Skips CUDA Graph capture — lowest CPU overhead', val:117.3, display:'117.3 ms', color:'#00a854'},
+  {label:'default',                   sub:'Straight eager dispatch',                        val:123.7, display:'123.7 ms', color:'#0071c5'},
+  {label:'max-autotune',              sub:'Attempts graph capture on XPU',                  val:123.6, display:'123.6 ms', color:'#f97316'},
+  {label:'reduce-overhead',           sub:'Adds trampoline overhead on XPU — slowest',      val:130.1, display:'130.1 ms', color:'#dc2626'},
+],160,'240px 1fr 80px');
+
+renderBars('kernel-chart',[
+  {label:'GEMM (mm / addmm / bmm)',  sub:'2094 kernel calls', val:57.3, display:'57.3 ms', color:'#0071c5'},
+  {label:'FFN SiGLU fused',          sub:'10 calls',          val:7.1,  display:'7.1 ms',  color:'#7c3aed'},
+  {label:'GELU + mul',               sub:'17 calls',          val:2.9,  display:'2.9 ms',  color:'#f97316'},
+  {label:'RoPE kernels',             sub:'180 calls each',    val:3.0,  display:'3.0 ms',  color:'#00a854'},
+  {label:'Softmax / attention',       sub:'17–180 calls',     val:1.9,  display:'1.9 ms',  color:'#d29922'},
+  {label:'micro_sdpa (SDPA)',         sub:'81 calls',          val:1.0,  display:'1.0 ms',  color:'#0891b2'},
+],70,'210px 1fr 68px');
+
+renderBars('droid-chart',[
+  {label:'B70 · PyTorch XPU · 10 steps',   sub:'baseline',                  val:118.7, display:'118.7 ms · 8.4 Hz',  color:'#f97316'},
+  {label:'B70 · OpenVINO FP32 · 10 steps', sub:'−25.6% latency / +34.6% Hz',val:88.3,  display:'88.3 ms · 11.3 Hz',  color:'#00a854'},
+],140,'280px 1fr 155px');
+
+renderBars('steps-chart',[
+  {label:'B70 · PyTorch · 10 steps',              val:130, display:'~130 ms', color:'#f97316'},
+  {label:'B70 · OpenVINO FP32 · 10 steps',        val:111, display:'~111 ms', color:'#0071c5'},
+  {label:'B70 · OpenVINO FP32 · 5 steps ✓',       val:70,  display:'~70 ms',  color:'#00a854'},
+  {label:'B70 · OV FP32 · 5 steps DROID ✓',       val:55,  display:'~55 ms',  color:'#059669'},
+],160,'270px 1fr 80px');
+
+showSlide(0);
+</script>
+</body>
+</html>

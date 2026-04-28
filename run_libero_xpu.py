@@ -616,6 +616,13 @@ def _eval_single_suite(args: Args, policy, viewer: "WebViewer | None" = None,
                     if done:
                         task_successes += 1
                         total_successes += 1
+                        if viewer is not None:
+                            viewer.update_stats(
+                                task=str(task_description),
+                                episode=task_episodes + 1,
+                                successes=task_successes,
+                                total=task_episodes + 1,
+                            )
                         break
                     t += 1
 
