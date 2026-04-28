@@ -146,51 +146,50 @@
 <!-- ════ SLIDE 3: Strategic Context ════ -->
 <div class="slide">
   <h2>Strategic Context</h2>
-  <div class="flex-grow" style="display:flex;flex-direction:column;gap:16px;">
+  <div class="flex-grow" style="display:grid;grid-template-columns:1fr 1fr;gap:20px;">
 
-    <!-- Row 1: How it started -->
-    <div class="grid-2" style="gap:14px;">
+    <!-- LEFT COLUMN: 3 cards -->
+    <div style="display:flex;flex-direction:column;gap:13px;overflow:hidden;">
+
+      <!-- Card 1: Mark Iskra -->
+      <div class="card" style="border-left:3px solid #94a3b8;">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:7px;">
+          <div style="width:24px;height:24px;border-radius:50%;background:#94a3b8;color:#fff;font-size:.7rem;font-weight:800;display:flex;align-items:center;justify-content:center;flex-shrink:0;">1</div>
+          <h3 style="margin:0;font-size:.88rem;">Presented Robotics Design Studio to Mark Iskra, OpenAI AE</h3>
+        </div>
+        <p>While the Design Studio showcased the B70's capabilities for creative design via local inference of text and omni models, companies like OpenAI are focusing on <strong>Physical AI</strong> and building models to control robots as the next wave of AI. Mark requested to enable <strong>VLA models on the B70</strong> as a potential workstation alternative to NVIDIA, where models are developed and tested in simulated environments, specifically <strong>OpenVLA and π0.5</strong>.</p>
+      </div>
+
+      <!-- Card 2: ECG Team -->
+      <div class="card" style="border-left:3px solid #94a3b8;">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:7px;">
+          <div style="width:24px;height:24px;border-radius:50%;background:#94a3b8;color:#fff;font-size:.7rem;font-weight:800;display:flex;align-items:center;justify-content:center;flex-shrink:0;">2</div>
+          <h3 style="margin:0;font-size:.88rem;">ECG Team Working with Customers to Enable VLA on Embedded Intel HW</h3>
+        </div>
+        <p>The ECG team reached out after learning about this effort. They already have <strong>π0.5 running on Lunar Lake at ~10 fps using 8 NPUs</strong>, are working with an active robotics customer, and are in direct contact with <strong>Physical Intelligence</strong>, the developers of π0.5. They see potential for <strong>heterogeneous computing</strong> and want to align on the work across Arc and ECG.</p>
+      </div>
+
+      <!-- Card 3: Our Goals -->
       <div class="card card-accent">
         <div style="display:flex;align-items:center;gap:8px;margin-bottom:7px;">
-          <div style="width:26px;height:26px;border-radius:50%;background:var(--intel-blue);color:#fff;font-size:.72rem;font-weight:800;display:flex;align-items:center;justify-content:center;flex-shrink:0;">1</div>
-          <h3 style="margin:0;font-size:.95rem;">Robotics Design Studio → Mark Iskra (OpenAI AE)</h3>
+          <div style="width:24px;height:24px;border-radius:50%;background:var(--intel-blue);color:#fff;font-size:.7rem;font-weight:800;display:flex;align-items:center;justify-content:center;flex-shrink:0;">3</div>
+          <h3 style="margin:0;font-size:.88rem;">Project Goals: Validate Arc Pro B70 as a VLA Development Workstation</h3>
         </div>
-        <p class="text-sm">We presented the <strong>Robotics Design Studio</strong> to Mark Iskra, Intel's Account Executive for OpenAI. He shared that <strong>OpenAI has had active discussions on robotics training and inference</strong>, and specifically asked us to focus on <strong>VLA models — OpenVLA and π0.5</strong> — as a priority workload for Arc Pro.</p>
+        <ul class="text-sm" style="padding-left:16px;">
+          <li>Port <strong>OpenVLA and π0.5</strong> to run on Intel XPU with full PyTorch support</li>
+          <li>Optimize inference performance to run <strong>under 100 ms</strong> for real-time robot control</li>
+          <li>Compare against the <strong>NVIDIA RTX PRO 4000</strong> as a workstation reference point</li>
+        </ul>
       </div>
-      <div class="card" style="border-left:3px solid var(--purple-text);">
-        <div style="display:flex;align-items:center;gap:8px;margin-bottom:7px;">
-          <div style="width:26px;height:26px;border-radius:50%;background:var(--purple-text);color:#fff;font-size:.72rem;font-weight:800;display:flex;align-items:center;justify-content:center;flex-shrink:0;">2</div>
-          <h3 style="margin:0;font-size:.95rem;">ECG Team — Embedded Robotics on PTL / LNL</h3>
-        </div>
-        <p class="text-sm">Shortly after, the <strong>ECG team reached out</strong> to compare π0.5 inference metrics. They are enabling π0.5 on <strong>Panther Lake and Lunar Lake</strong> iGPU + NPU for embedded robotics. They needed a workstation-class reference point — which the B70 provides.</p>
-      </div>
+
     </div>
 
-    <!-- Row 2: Our angle -->
-    <div class="card" style="border:2px solid var(--intel-blue);background:var(--intel-blue-10);">
-      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
-        <div style="width:26px;height:26px;border-radius:50%;background:var(--intel-blue);color:#fff;font-size:.72rem;font-weight:800;display:flex;align-items:center;justify-content:center;flex-shrink:0;">3</div>
-        <h3 style="margin:0;color:var(--intel-blue);">Our Angle — Arc Pro B70 as the VLA Development Workstation</h3>
-      </div>
-      <p class="text-sm">Would OpenAI or Physical Intelligence consider the Arc Pro B70 as a <strong>development workstation for building and testing VLA models</strong>? The results say yes: the B70 runs π0.5 at <strong>&gt;10 Hz</strong>, supports the full <strong>PyTorch XPU stack without any CUDA dependency</strong>, and at <strong>~$949</strong> is roughly half the price of the NVIDIA RTX PRO 4000 (~$1,679–$1,999) — which it now outperforms with OpenVINO.</p>
-    </div>
-
-    <!-- Row 3: 3 summary chips -->
-    <div class="grid-3" style="gap:12px;">
-      <div class="card card-filled text-center" style="padding:12px 8px;">
-        <div style="font-size:1.3rem;margin-bottom:4px;">🎯</div>
-        <div class="bold" style="font-size:.85rem;">Request</div>
-        <div class="text-xs text-dim mt-8">Enable OpenVLA &amp; π0.5 on Arc Pro — per Mark Iskra / OpenAI feedback</div>
-      </div>
-      <div class="card card-filled text-center" style="padding:12px 8px;">
-        <div style="font-size:1.3rem;margin-bottom:4px;">🤝</div>
-        <div class="bold" style="font-size:.85rem;">Teams</div>
-        <div class="text-xs text-dim mt-8">Arc Pro (B70 workstation) + ECG (PTL/LNL embedded) — complementary, not competing</div>
-      </div>
-      <div class="card card-filled text-center" style="padding:12px 8px;">
-        <div style="font-size:1.3rem;margin-bottom:4px;">💡</div>
-        <div class="bold" style="font-size:.85rem;">Why B70</div>
-        <div class="text-xs text-dim mt-8">&gt;10 Hz · full PyTorch XPU · no CUDA · $949 vs $1,699</div>
+    <!-- RIGHT COLUMN: image / video placeholder -->
+    <div style="display:flex;flex-direction:column;gap:12px;">
+      <div style="flex:1;background:var(--surface-muted);border:2px dashed var(--border);border-radius:12px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;min-height:0;">
+        <div style="font-size:3.5rem;opacity:.3;">🤖</div>
+        <div class="bold" style="font-size:.95rem;color:var(--text-secondary);">Insert Robot / Demo Image or Video</div>
+        <div class="text-xs text-dim text-center" style="max-width:220px;">e.g. π0.5 LIBERO rollout, robot arm manipulation, or Physical Intelligence demo screenshot</div>
       </div>
     </div>
 
