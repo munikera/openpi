@@ -1,5 +1,17 @@
 # openpi
 
+ZE_AFFINITY_MASK=2 ~/munikera/pti-gpu/tools/unitrace/build/unitrace -d -v \
+    python pi0.5_profile.py \
+        --task droid \
+        --tag baseline \
+        --unitrace \
+        --no-profiler \
+        --num-warmup 10 \
+        --num-iters 5 \
+        --num-steps 10 \
+    2>&1 | tee unitrace_pi0_droid_baseline.txt
+
+
 openpi holds open-source models and packages for robotics, published by the [Physical Intelligence team](https://www.physicalintelligence.company/).
 
 Currently, this repo contains three types of models:

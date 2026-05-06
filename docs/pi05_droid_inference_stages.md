@@ -69,18 +69,18 @@ GPU device time from `pt.trace.json` via `scripts/analyze_trace.py` (e2e trace, 
 
 | Hardware | Wall mean | Std | Min | p95 | GPU device time | CPU overhead† |
 |---|---|---|---|---|---|---|
-| **Intel Arc B70 (XPU)** | **135.6 ms** | 8.1 ms | 121.4 ms | 146.5 ms | **79.9 ms** | **55.7 ms** |
+| **Intel Arc B70 (XPU)** | **123.6 ms** | 6.3 ms | — | 136.5 ms | **79.4 ms** | **44.2 ms** |
 | **NVIDIA RTX 4000 Ada** | **83.6 ms** | 0.1 ms | 83.3 ms | 83.9 ms | **76.3 ms** | **7.3 ms** |
 
-†CPU overhead = wall − GPU device time.
+†CPU overhead = wall − GPU device time. XPU data from `profiler_output/compile_max_autotune/`.
 
-XPU is **1.62× slower** wall-to-wall. GPU compute time is nearly identical — only **4.7% slower** on
-XPU (79.9ms vs 76.3ms). The entire 52ms wall-clock gap is **CPU kernel dispatch overhead**:
+XPU is **1.48× slower** wall-to-wall. GPU compute time is nearly identical — only **4.1% slower** on
+XPU (79.4ms vs 76.3ms). The entire 40ms wall-clock gap is **CPU kernel dispatch overhead**:
 
 - **NVIDIA**: `torch.compile` captures all ~5,046 kernels/iter into **CUDA Graphs** and replays them
   via **12 `cudaGraphLaunch` calls/iter** ≈ 0.1ms CPU dispatch per iteration.
-- **XPU**: Each of 14,379 kernels/iter requires an individual `urEnqueueKernelLaunch` to Level Zero
-  ≈ 3–4 µs × 14,379 = **~55ms CPU dispatch per iteration**.
+- **XPU**: Each of 4,793 kernels/iter requires an individual `urEnqueueKernelLaunch` to Level Zero
+  ≈ 9–10 µs × 4,793 = **~44ms CPU dispatch per iteration**.
 
 ---
 
@@ -92,8 +92,8 @@ points** and cannot fuse across them.
 
 | Metric | Original (staged+sync) | Corrected (e2e, no sync) | What changed |
 |---|---|---|---|
-| GPU device time | 123 ms/iter | **79.9 ms/iter** | −43ms — the real compiled graph |
-| Kernel count | ~40,000 | **14,379** | 2.8× fewer — proper fusion active |
+| GPU device time | 123 ms/iter | **79.4 ms/iter** | −43ms — the real compiled graph |
+| Kernel count | ~40,000 | **4,793** | 8.4× fewer — proper fusion active |
 | Kernel type | Raw ATen: `Array`, `MulFunctor`, `StoreWithCast`… | Fused Triton: `triton_tem_fused_*`… | Compiler now fuses across former boundaries |
 | `aten::mul` reported cost | 15.1 ms | **0 ms** (fused away) | Was unfused fragments from broken graph |
 | `aten::copy_` reported cost | 11.3 ms | **~0 ms** (fused into Triton) | Casts folded into surrounding kernels |
@@ -105,20 +105,20 @@ compiled model.
 
 ---
 
-## Op-level kernel breakdown — XPU baseline (79.9 ms/iter)
+## Op-level kernel breakdown — XPU (79.4 ms/iter, compile_max_autotune)
 
-Source: `profiler_output/baseline_xpu/summary.txt` — e2e trace, 3 profiler iters, **14,379 kernels**,
+Source: `profiler_output/compile_max_autotune/` — e2e trace, 3 profiler iters, **4,793 kernels/iter**,
 **0 unmatched** (100% attribution via correlation id chain).
 
 ### GPU device time by PyTorch op
 
 | Op | ms/iter | % | calls/iter | Notes |
 |---|---|---|---|---|
-| `aten::mm` | 42.342 | 53.0% | 1,381 | Square matmuls → `gemm_kernel` |
-| `aten::addmm` | 10.966 | 13.7% | 499 | Bias-fused matmuls → `gemm_kernel` |
-| `triton_per_fused_addmm_silu_t_3` | 7.144 | 8.9% | 10 | FFN SiGLU: addmm+silu fused ✅ |
-| `aten::bmm` | 4.315 | 5.4% | 214 | Attention QKᵀ and score·V → `gemm_kernel` |
-| `triton_poi_fused__unsafe_view_gelu_mul_21` | 2.923 | 3.7% | 17 | SigLIP GELU+mul fused ✅ |
+| `aten::mm` | 42.034 | 52.9% | 1,381 | Square matmuls → `gemm_kernel` |
+| `aten::addmm` | 10.895 | 13.7% | 499 | Bias-fused matmuls → `gemm_kernel` |
+| `triton_per_fused_addmm_silu_t_3` | 7.143 | 9.0% | 10 | FFN SiGLU: addmm+silu fused ✅ |
+| `aten::bmm` | 4.343 | 5.5% | 214 | Attention QKᵀ and score·V → `gemm_kernel` |
+| `triton_poi_fused__unsafe_view_gelu_mul_21` | 2.907 | 3.7% | 17 | SigLIP GELU+mul fused ✅ |
 | `triton_tem_fused__to_copy__..._view_10` (RoPE) | 1.286 | 1.6% | 180 | VLM RoPE (cos/sin+cat fused) ✅ |
 | `triton_per_fused__softmax__to_copy_..._where_18` | 1.188 | 1.5% | 17 | VLM attention softmax+mask fused ✅ |
 | `aten::_scaled_dot_product_fused_attention_overrideable` | 1.037 | 1.3% | 81 | SigLIP SDPA (`micro_sdpa`) |
@@ -135,15 +135,15 @@ Source: `profiler_output/baseline_xpu/summary.txt` — e2e trace, 3 profiler ite
 | `triton_red_fused__to_copy__..._rsqrt_23` | 0.289 | 0.4% | 8 | SigLIP RMSNorm-like fused ✅ |
 | `triton_red_fused_add_native_layer_norm_view_6` | 0.285 | 0.4% | 39 | SigLIP LayerNorm fused ✅ |
 | remaining 40+ Triton kernels | ~1.9 | ~2.4% | — | conv, linspace, cumsum, noise, etc. |
-| **TOTAL** | **79.919** | | | |
+| **TOTAL** | **79.358** | | | |
 
 ### GPU device time by kernel name
 
 | Kernel | ms/iter | % | calls/iter | Notes |
 |---|---|---|---|---|
-| `gemm_kernel` (oneMKL) | **57.623** | **72.1%** | 2,094 | All GEMMs: QKV, FFN, output proj |
-| `triton_per_fused_addmm_silu_t_3` | 7.144 | 8.9% | 10 | FFN SiGLU fused ✅ |
-| `triton_poi_fused__unsafe_view_gelu_mul_21` | 2.923 | 3.7% | 17 | SigLIP GELU+mul ✅ |
+| `gemm_kernel` (oneMKL) | **57.273** | **72.1%** | 2,094 | All GEMMs: QKV, FFN, output proj |
+| `triton_per_fused_addmm_silu_t_3` | 7.143 | 9.0% | 10 | FFN SiGLU fused ✅ |
+| `triton_poi_fused__unsafe_view_gelu_mul_21` | 2.907 | 3.7% | 17 | SigLIP GELU+mul ✅ |
 | `triton_tem_fused__to_copy__..._view_10` (RoPE) | 1.286 | 1.6% | 180 | VLM RoPE fused ✅ |
 | `triton_per_fused__softmax__..._where_18` | 1.188 | 1.5% | 17 | VLM attention softmax+mask ✅ |
 | `micro_sdpa` | 1.037 | 1.3% | 81 | SigLIP SDPA |
@@ -158,7 +158,7 @@ Source: `profiler_output/baseline_xpu/summary.txt` — e2e trace, 3 profiler ite
 | `gen_conv` | 0.098 | 0.1% | 3 | SigLIP patch conv |
 | everything else | ~0.9 | ~1.1% | — | clone, cat, linspace, noise |
 
-**Key observation:** `gemm_kernel` alone = **72.1% of all GPU device time**. All other kernels combined = 22.3ms.
+**Key observation:** `gemm_kernel` alone = **72.1% of all GPU device time**. All other kernels combined = 22.1ms.
 
 **Key observation:** There are **no unfused `aten::mul`, `aten::add`, `aten::copy_`, `aten::mean`,
 or `aten::rsqrt`** in the kernel name table. All are folded into fused Triton kernels. The
@@ -215,11 +215,11 @@ Source: `profiler_output/baseline_nvidia/summary.txt` — e2e trace, 3 profiler 
 
 | Category | XPU B70 | NVIDIA RTX4000 | Ratio | Source |
 |---|---|---|---|---|
-| **Wall-clock** | **135.6 ms** | **83.6 ms** | **1.62× slower** | timing.txt, 30 iters |
-| **GPU device time** | **79.9 ms** | **76.3 ms** | **1.05× slower** | trace (all kernels / n_iters) |
-| **CPU dispatch overhead** | **55.7 ms** | **7.3 ms** | **7.6× more** | wall − GPU |
-| Kernel dispatch mechanism | 14,379 individual L0 enqueues | 5,046 kernels via 12 CUDA Graph launches | — | trace |
-| **GEMM** | `gemm_kernel` 57.6 ms (2,094 calls) | cutlass 42.8 ms (709 calls) | **1.35× slower ❌** | kernel trace |
+| **Wall-clock** | **123.6 ms** | **83.6 ms** | **1.48× slower** | timing.txt, 30 iters |
+| **GPU device time** | **79.4 ms** | **76.3 ms** | **1.04× slower** | trace (all kernels / n_iters) |
+| **CPU dispatch overhead** | **44.2 ms** | **7.3 ms** | **6.1× more** | wall − GPU |
+| Kernel dispatch mechanism | 4,793 individual L0 enqueues | 5,046 kernels via 12 CUDA Graph launches | — | trace |
+| **GEMM** | `gemm_kernel` 57.3 ms (2,094 calls) | cutlass 42.8 ms (709 calls) | **1.34× slower ❌** | kernel trace |
 | FFN SiGLU | 7.14 ms | 7.61 ms | 0.94× | `triton_per_fused_addmm_silu_t_3` |
 | GELU+mul | 3.28 ms | 4.21 ms | **0.78× faster ✅** | fused Triton |
 | RoPE | 3.07 ms | 1.70 ms | 1.81× | fused Triton |
@@ -230,14 +230,14 @@ Source: `profiler_output/baseline_nvidia/summary.txt` — e2e trace, 3 profiler 
 
 ### Key findings
 
-**Finding 1 — The 1.62× wall-clock gap is entirely CPU dispatch overhead, not GPU compute.**  
-GPU device time: XPU 79.9ms vs NVIDIA 76.3ms — only **4.7% difference**. All 52ms of extra
+**Finding 1 — The 1.48× wall-clock gap is entirely CPU dispatch overhead, not GPU compute.**  
+GPU device time: XPU 79.4ms vs NVIDIA 76.3ms — only **4.1% difference**. All 40ms of extra
 wall-clock on XPU is CPU overhead from individual Level Zero kernel enqueues.  
 NVIDIA eliminates this via CUDA Graphs: 12 graph launches submit all 5,046 kernels/iter with
 essentially zero CPU cost. XPU has no equivalent mechanism available in PyTorch today.
 
-**Finding 2 — XPU GEMM is 1.35× slower than NVIDIA (the original doc had this reversed).**  
-XPU `gemm_kernel` = 57.6ms (2,094 calls) vs NVIDIA cutlass = 42.8ms (709 calls).  
+**Finding 2 — XPU GEMM is 1.34× slower than NVIDIA (the original doc had this reversed).**  
+XPU `gemm_kernel` = 57.3ms (2,094 calls) vs NVIDIA cutlass = 42.8ms (709 calls).  
 The original doc reported XPU GEMM as 12% *faster* — that was from the sync-broken graph where
 GEMM was fragmented into many small unfused dispatches. In the real compiled graph, NVIDIA's
 cutlass + tensor cores outperform oneMKL for these shapes. NVIDIA also fuses more aggressively:
@@ -268,14 +268,18 @@ Triton kernel for reduction ops on XPU hardware.
 
 ## Optimization priorities
 
+All data below based on `compile_max_autotune` baseline: wall **123.6 ms**, GPU **79.4 ms**, CPU overhead **44.2 ms**, **4,793 kernels/iter** (9–10 µs/enqueue).
+
 | Priority | Target | Cost | Status | Mechanism | Expected saving |
 |---|---|---|---|---|---|
-| 🔴 1 | **XPU equivalent of CUDA Graphs** | ~48ms CPU overhead | ❌ Not yet available | `torch.compile reduce-overhead` mode; Level Zero command list replay; Intel Graph Extension for L0 | 20–45 ms |
-| 🔴 2 | **Reduce kernel dispatch count** | 14,379 dispatches/iter | ⚠️ Partial | Each L0 enqueue ~3–4µs CPU. SDPA for Gemma attention would replace many bmm+softmax+mask dispatches with one fused op | 5–15 ms |
-| 🟡 3 | **Close GEMM gap** (57.6ms XPU vs 42.8ms NVIDIA, 1.35×) | 57.6 ms GPU | ❌ Open gap | Profile oneMKL configs for specific shapes; check tile sizing; consider oneDNN GEMM configs | ~10 ms if closed |
-| 🟡 4 | **Enable SDPA for Gemma attention** | reduces dispatch count + ~1.9ms softmax | ❌ Runtime override | `pi0_pytorch.py` forces `_attn_implementation="eager"`. Removing override lets XPU use `micro_sdpa` | ~2–5 ms via dispatch reduction |
+| 🔴 1 | **Switch to `max-autotune-no-cudagraphs`** | ~7ms wall | ✅ **Measured** | 1-line config change: `pytorch_compile_mode = "max-autotune-no-cudagraphs"`. Skips CUDA Graph capture attempt → 117.3ms wall | **~6 ms** |
+| 🔴 2 | **Enable SDPA for Gemma attention** | ~44ms CPU overhead | � **In progress** | Remove `_attn_implementation = "eager"` overrides in `pi0_pytorch.py` lines 392 and 448. Consolidates bmm+softmax+mask dispatches into single `micro_sdpa` calls → fewer L0 enqueues | **5–15 ms** |
+| 🔴 3 | **XPU equivalent of CUDA Graphs** | 44ms CPU overhead | ❌ Not yet available | Level Zero command list replay; Intel Graph Extension for L0; future `torch.compile` XPU backend support | **20–40 ms** |
+| 🟡 4 | **Close GEMM gap** (57.3ms XPU vs 42.8ms NVIDIA, 1.34×) | 57.3 ms GPU | ❌ Open gap | Profile oneMKL configs for specific GEMM shapes; check tile sizing; consider oneDNN GEMM; NVIDIA fuses mm+transpose+view (2,094→709 calls) | **~10–15 ms** |
 | 🟢 5 | **Dtype cast removal** | ~0 ms (fused by compiler) | ✅ Already fused | Casts are inside Triton kernels. Removing source casts may slightly reduce kernel variant count | marginal |
 | 🟢 6 | **RMSNorm / FFN SiGLU / RoPE / softmax fusion** | 0 ms (already fused) | ✅ Already done | All covered by fused Triton kernels. `csrc/rms_norm_xpu.cpp` not needed | — |
+
+**Combined best-case target: ~90–100 ms** (items 1+2 alone: 117.3 → ~100 ms; items 1+2+4: toward ~90 ms).
 
 ---
 
@@ -314,17 +318,20 @@ would give Inductor one large graph per step with no Python re-entries between k
 
 ### `_attn_implementation` — HuggingFace attention algorithm dispatch
 
-Two separate runtime overrides are set in `pi0_pytorch.py` immediately before the forward pass:
+Set at model construction time in `gemma_pytorch.py` (both VLM and Action Expert):
 
 ```python
-# sample_actions() — prefix forward (PaliGemma VLM), line 392
-self.paligemma_with_expert.paligemma.language_model.config._attn_implementation = "eager"
+# gemma_pytorch.py — VLM (PaliGemma prefix)
+vlm_config_hf.text_config._attn_implementation = "sdpa"
 
-# denoise_step() — suffix forward (Action Expert), line 448
-self.paligemma_with_expert.gemma_expert.model.config._attn_implementation = "eager"
+# gemma_pytorch.py — Action Expert (denoise steps)
+action_expert_config_hf = CONFIG_MAPPING["gemma"](
+    ...
+    attn_implementation="sdpa",
+)
 ```
 
-These override the HuggingFace attention dispatch in `modeling_gemma.py`:
+HuggingFace dispatches to the backend in `modeling_gemma.py`:
 
 ```python
 # modeling_gemma.py line 312–314
@@ -333,46 +340,45 @@ if self.config._attn_implementation != "eager":
     attention_interface = ALL_ATTENTION_FUNCTIONS[self.config._attn_implementation]
 ```
 
-| Value | What runs | XPU behavior |
-|---|---|---|
-| `"eager"` | Manual `Q·Kᵀ·softmax·V` — plain `torch.matmul` + `F.softmax` | **Current setting.** Plain ops are fully traceable by Inductor → fused into `triton_per_fused__softmax_..._where_*` kernels |
-| `"sdpa"` | `F.scaled_dot_product_attention` | Would dispatch through XPU's `micro_sdpa` — fewer individual L0 enqueues but may cause a graph break in the compiled graph |
-| `"flash_attention_2"` | FlashAttention-2 | Not available on XPU |
-| `"flex_attention"` | PyTorch FlexAttention | Not tested on XPU |
+`ALL_ATTENTION_FUNCTIONS` is a registry in `transformers.modeling_utils` populated at import time. Valid keys (from `transformers==4.53.2`):
 
-**Why `"eager"` is used instead of `"sdpa"`:** With `_attn_implementation="sdpa"`,
-`F.scaled_dot_product_attention` dispatches through a backend-selection mechanism at runtime
-that TorchDynamo cannot always trace cleanly on XPU. This causes a graph break between the
-pre-attention ops and the SDPA call, splitting the compiled graph and preventing Inductor from
-fusing the attention with surrounding RoPE / mask / residual kernels.
+| Value | Backend function | XPU behavior | Notes |
+|---|---|---|---|
+| `"eager"` | `eager_attention_forward` (local in `modeling_gemma.py`) | **Previous default.** Manual `Q·Kᵀ·softmax·V` — plain `matmul` + `F.softmax`. Fully traceable by Inductor → fused into `triton_per_fused__softmax_..._where_*` kernels | Best for Inductor fusion on XPU |
+| `"sdpa"` | `sdpa_attention_forward` (`integrations/sdpa_attention.py`) | **Current setting.** Calls `F.scaled_dot_product_attention` → dispatches XPU's `micro_sdpa`. Fewer individual L0 enqueues but may cause graph break in `torch.compile` | May break Inductor fusion; needs profiling |
+| `"flash_attention_2"` | `flash_attention_forward` (`integrations/flash_attention.py`) | ❌ Not available on XPU. Requires CUDA + `flash-attn` package | NVIDIA only |
+| `"flash_attention_3"` | `flash_attention_forward` (same, Hopper path) | ❌ Not available on XPU. Requires H100/Hopper + FA3 package | H100 only |
+| `"flex_attention"` | `flex_attention_forward` (`integrations/flex_attention.py`) | ⚠️ Untested on XPU. Uses `torch.nn.attention.flex_attention` — may or may not have XPU backend | Experimental |
 
-With `"eager"`, all attention ops are plain `matmul` + `softmax` — fully visible to Inductor,
-which fuses them into single Triton kernels like `triton_per_fused__softmax__to_copy_..._where_18`
-(1.19ms, 17 calls) and `triton_per_fused__softmax__..._where_12` (0.70ms, 180 calls).
+**Why `"eager"` was previously preferred over `"sdpa"` for Gemma:**  
+With `_attn_implementation="sdpa"`, `F.scaled_dot_product_attention` dispatches through a runtime backend-selection mechanism that TorchDynamo cannot always trace cleanly on XPU. This can cause a graph break between the pre-attention ops and the SDPA call, splitting the compiled graph and preventing Inductor from fusing the attention with surrounding RoPE / mask / residual kernels.
 
-**SigLIP vision encoder** uses `micro_sdpa` regardless — its `_attn_implementation` is not
-overridden by `pi0_pytorch.py` (only the VLM and action expert are overridden). This is why
-`micro_sdpa` appears in the kernel trace (1.04ms, 81 calls) while Gemma attention appears as
-fused softmax Triton kernels.
+With `"eager"`, all attention ops are plain `matmul` + `softmax` — fully visible to Inductor, which fuses them into single Triton kernels like `triton_per_fused__softmax__to_copy_..._where_18` (1.18ms, 17 calls) and `triton_per_fused__softmax__..._where_12` (0.70ms, 180 calls).
+
+**Current state — switched to `"sdpa"` for experimentation:**  
+Both VLM and Action Expert now use `"sdpa"` set at construction time in `gemma_pytorch.py`. The hypothesis is that on XPU with `max-autotune`, `micro_sdpa` will reduce L0 enqueue count (replacing many separate bmm+softmax+mask enqueues with one). Whether this causes a graph break or saves time needs to be measured with a new trace.
+
+**SigLIP vision encoder** uses `micro_sdpa` regardless — its `_attn_implementation` is not set in `gemma_pytorch.py`. This is why `micro_sdpa` appears in the baseline kernel trace (1.04ms, 81 calls).
 
 ### Compile mode interaction diagram
 
 ```
-pytorch_compile_mode = "reduce-overhead"
+pytorch_compile_mode = "max-autotune"
          ↓
 torch.compile(sample_actions)
          ↓
 TorchDynamo traces sample_actions body
   ├── embed_prefix  → prefix fwd (PaliGemma)
-  │     └── _attn_implementation = "eager"
-  │           → plain matmul+softmax → FUSED into triton_per_fused_..._where_18
+  │     └── _attn_implementation = "sdpa"  ← set at construction (gemma_pytorch.py)
+  │           → F.scaled_dot_product_attention → micro_sdpa (fewer L0 enqueues)
+  │           OR → graph break (needs measurement)
   └── denoise_step (×10 re-entries due to while loop)
-        └── _attn_implementation = "eager"
-              → plain matmul+softmax → FUSED into triton_per_fused_..._where_12
-              → all ops → 14,379 individual L0 enqueues/iter
+        └── _attn_implementation = "sdpa"  ← set at construction (gemma_pytorch.py)
+              → F.scaled_dot_product_attention → micro_sdpa
+              → all ops → 4,793 individual L0 enqueues/iter (baseline, pre-sdpa)
 
-On NVIDIA: reduce-overhead → CUDA Graphs → 12 cudaGraphLaunch/iter (7ms overhead)
-On XPU:   reduce-overhead → no L0 replay → 14,379 urEnqueueKernelLaunch/iter (55ms overhead)
+On NVIDIA: max-autotune → CUDA Graphs → 12 cudaGraphLaunch/iter (7ms overhead)
+On XPU:   max-autotune → no L0 replay → ~4,793 urEnqueueKernelLaunch/iter (44ms overhead, baseline)
 ```
 
 ---

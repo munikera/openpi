@@ -1,0 +1,139 @@
+diff --git a/examples/libero/requirements.txt b/examples/libero/requirements.txt
+index 1a52b42..b93a497 100644
+--- a/examples/libero/requirements.txt
++++ b/examples/libero/requirements.txt
+@@ -104,14 +104,11 @@ six==1.17.0
+     #   python-xlib
+ termcolor==2.4.0
+     # via robosuite
+-torch==1.11.0+cu113
+     # via
+     #   -r examples/libero/requirements.in
+     #   torchaudio
+     #   torchvision
+-torchaudio==0.11.0+cu113
+     # via -r examples/libero/requirements.in
+-torchvision==0.12.0+cu113
+     # via -r examples/libero/requirements.in
+ tqdm==4.67.1
+     # via -r examples/libero/requirements.in
+diff --git a/pyproject.toml b/pyproject.toml
+index 6c8a0f4..0760c80 100644
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -3,7 +3,7 @@ name = "openpi"
+ version = "0.1.0"
+ description = "Physical Intelligence open source repo"
+ readme = "README.md"
+-requires-python = ">=3.11"
++requires-python = ">=3.11,<3.12"
+ license = { file = "LICENSE" }
+ dependencies = [
+     "augmax>=0.3.4",
+@@ -15,18 +15,19 @@ dependencies = [
+     "fsspec[gcs]>=2024.6.0",
+     "gym-aloha>=0.1.1",
+     "imageio>=2.36.1",
+-    "jax[cuda12]==0.5.3",
++    "jax==0.5.3",
+     "jaxtyping==0.2.36",
+     "lerobot",
+     "ml_collections==1.0.0",
+-    "numpy>=1.22.4,<2.0.0",
++    "numpy>=1.22.4",
+     "numpydantic>=1.6.6",
+     "opencv-python>=4.10.0.84",
+     "openpi-client",
+     "orbax-checkpoint==0.11.13",
+     "pillow>=11.0.0",
+     "sentencepiece>=0.2.0",
+-    "torch==2.7.1",
++    "torch==2.10.0+xpu",
++    "torchvision==0.25.0+xpu",
+     "tqdm-loggable>=0.2",
+     "typing-extensions>=4.12.2",
+     "tyro>=0.9.5",
+@@ -53,15 +54,18 @@ dev = [
+     "matplotlib>=3.10.0",
+     "pynvml>=12.0.0",
+ ]
+-rlds = [
+-    # NOTE: tensorflow-cpu 2.15.0 only ships cp311 wheels on PyPI.
+-    # Use `uv venv --python 3.11` before `uv sync --group rlds`.
+-    "dlimp",
+-    "tensorflow-cpu==2.15.0",
+-    "tensorflow-datasets==4.9.9",
+-]
++# rlds extra disabled due to ml-dtypes conflict between jax==0.5.3 and tensorflow-cpu==2.15.0
++# rlds = [
++#     "dlimp",
++#     "tensorflow-cpu==2.15.0",
++#     "tensorflow-datasets==4.9.9",
++# ]
+ 
+ [tool.uv]
++environments = ["sys_platform == 'linux' and python_version < '3.13'"]
++[[tool.uv.index]]
++url = "https://download.pytorch.org/whl/xpu"
++name = "pytorch-xpu"
+ override-dependencies = ["ml-dtypes==0.4.1", "tensorstore==0.1.74"]
+ 
+ [tool.uv.sources]
+diff --git a/src/openpi/models_pytorch/pi0_pytorch.py b/src/openpi/models_pytorch/pi0_pytorch.py
+index e68ddb7..fd35683 100644
+--- a/src/openpi/models_pytorch/pi0_pytorch.py
++++ b/src/openpi/models_pytorch/pi0_pytorch.py
+@@ -75,7 +75,7 @@ def make_att_2d_masks(pad_masks, att_masks):
+     if pad_masks.ndim != 2:
+         raise ValueError(pad_masks.ndim)
+ 
+-    cumsum = torch.cumsum(att_masks, dim=1)
++    cumsum = torch.cumsum(att_masks.to(torch.int32), dim=1)
+     att_2d_masks = cumsum[:, None, :] <= cumsum[:, :, None]
+     pad_2d_masks = pad_masks[:, None, :] * pad_masks[:, :, None]
+     return att_2d_masks & pad_2d_masks
+@@ -341,7 +341,7 @@ class PI0Pytorch(nn.Module):
+         att_masks = torch.cat([prefix_att_masks, suffix_att_masks], dim=1)
+ 
+         att_2d_masks = make_att_2d_masks(pad_masks, att_masks)
+-        position_ids = torch.cumsum(pad_masks, dim=1) - 1
++        position_ids = torch.cumsum(pad_masks.to(torch.int32), dim=1) - 1
+ 
+         # Prepare attention masks
+         att_2d_masks_4d = self._prepare_attention_masks_4d(att_2d_masks)
+@@ -385,7 +385,7 @@ class PI0Pytorch(nn.Module):
+ 
+         prefix_embs, prefix_pad_masks, prefix_att_masks = self.embed_prefix(images, img_masks, lang_tokens, lang_masks)
+         prefix_att_2d_masks = make_att_2d_masks(prefix_pad_masks, prefix_att_masks)
+-        prefix_position_ids = torch.cumsum(prefix_pad_masks, dim=1) - 1
++        prefix_position_ids = torch.cumsum(prefix_pad_masks.to(torch.int32), dim=1) - 1
+ 
+         # Compute image and language key value cache
+         prefix_att_2d_masks_4d = self._prepare_attention_masks_4d(prefix_att_2d_masks)
+@@ -441,7 +441,7 @@ class PI0Pytorch(nn.Module):
+         full_att_2d_masks = torch.cat([prefix_pad_2d_masks, suffix_att_2d_masks], dim=2)
+ 
+         prefix_offsets = torch.sum(prefix_pad_masks, dim=-1)[:, None]
+-        position_ids = prefix_offsets + torch.cumsum(suffix_pad_masks, dim=1) - 1
++        position_ids = prefix_offsets + torch.cumsum(suffix_pad_masks.to(torch.int32), dim=1) - 1
+ 
+         # Prepare attention masks
+         full_att_2d_masks_4d = self._prepare_attention_masks_4d(full_att_2d_masks)
+diff --git a/src/openpi/policies/policy_config.py b/src/openpi/policies/policy_config.py
+index 6570df0..510c8dd 100644
+--- a/src/openpi/policies/policy_config.py
++++ b/src/openpi/policies/policy_config.py
+@@ -68,7 +68,12 @@ def create_trained_policy(
+         try:
+             import torch
+ 
+-            pytorch_device = "cuda" if torch.cuda.is_available() else "cpu"
++            if torch.cuda.is_available():
++                pytorch_device = "cuda"
++            elif hasattr(torch, "xpu") and torch.xpu.is_available():
++                pytorch_device = "xpu"
++            else:
++                pytorch_device = "cpu"
+         except ImportError:
+             pytorch_device = "cpu"
+ 

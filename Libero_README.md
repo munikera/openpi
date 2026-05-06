@@ -2,6 +2,38 @@
 
 This patch enables OpenPI (π0.5) evaluation on **Intel Arc pro B70** .
 
+## Table of Contents
+
+- [What the patch changes](#what-the-patch-changes)
+- [Benchmark Scripts](#benchmark-scripts-this-repo)
+- [Requirements](#requirements)
+- [Setup](#setup)
+  - [Step 0: Clone and install dependencies](#0-clone-and-install-dependencies)
+  - [Step 1: Copy Patches and Benchmark Scripts](#step-1-copy-patches-and-benchmark-scripts)
+  - [Step 2: Apply the XPU Patches](#step-2-apply-the-xpu-patches)
+  - [Step 3: Install PyTorch XPU](#step-3-install-pytorch-xpu)
+  - [Step 4: Apply Transformers Patch](#step-4-apply-transformers-patch)
+  - [Step 5: Install libero, Client, and Dependencies](#step-5-install-libero-client-and-dependencies)
+  - [Step 6: Reset libero Data Paths](#step-6-reset-libero-data-paths)
+  - [Step 7: Convert Checkpoint to PyTorch](#step-7-convert-checkpoint-to-pytorch-first-time-only)
+- [Run — PyTorch Inference](#run--pytorch-inference)
+  - [Available Suites](#available-suites)
+  - [Denoising Steps (--num-steps)](#--argsnum-steps--denoising-steps)
+- [Run — OpenVINO](#run--openvino-export-once-then-run)
+  - [Prerequisites](#prerequisites)
+  - [Export — 10 denoising steps](#export--10-denoising-steps-default-quality)
+  - [Export — 5 denoising steps](#export--5-denoising-steps-recommended--breaks-100-ms)
+  - [Full pipeline in one command](#full-pipeline-in-one-command)
+  - [Run with OV model](#run-with-an-ov-model)
+- [Results — Accuracy & Speed](#results--accuracy--speed)
+- [Reference](#reference)
+  - [Output Files](#output-files)
+  - [Environment Variables](#why-the-environment-variables)
+  - [Live Web Viewer](#live-web-viewer)
+  - [Quick Setup (New Terminal)](#quick-setup-new-terminal)
+- [Troubleshooting](#troubleshooting)
+- [Architecture: Why a Worker Subprocess?](#architecture-why-a-worker-subprocess)
+
 ## What the patch changes
 
 The patch (`openpi_xpu.patch`) only contains the minimal changes needed to make the upstream `openpi` repo compatible with Intel XPU. A second patch (`libero_xpu.patch`) fixes the `third_party/libero` submodule. Benchmark scripts are maintained separately in this repo under `openpi/libero/` and `openpi/droid/`.
@@ -15,6 +47,7 @@ The patch (`openpi_xpu.patch`) only contains the minimal changes needed to make 
 | `pyproject.toml` | Modified | `torch==2.10.0+xpu`, `torchvision==0.25.0+xpu`; pin `requires-python >=3.11,<3.12`; remove `jax[cuda12]` → `jax==0.5.3`; remove `numpy<2.0.0` cap; comment out rlds extra (ml-dtypes conflict); add pytorch-xpu index |
 | `examples/libero/requirements.txt` | Modified | Commented out CUDA torch/torchvision (conflicts with XPU torch in main env) |
 | `src/openpi/policies/policy_config.py` | Modified | Adds XPU auto-detection |
+| `src/openpi/models_pytorch/pi0_pytorch.py` | Modified | Adds `.to(torch.int32)` before 4 `cumsum` calls — OV GPU plugin rejects `u8` CumSum during ONNX export |
 
 ### `libero_xpu.patch` (submodule)
 
@@ -168,28 +201,77 @@ python -c "from openpi.shared.download import maybe_download; print(maybe_downlo
 
 ```
 
-## Benchmark Results
+## Run — PyTorch Inference
 
-π0.5 model, 5 trials/task, 10 denoising steps.
+Set environment variables and run:
 
-| Suite | Model | Framework | GPU | Denoise Steps | Inference Speed | Hz | Success Rate | Trials |
-|---|---|---|---|---|---|---|---|---|
-| LIBERO-Spatial | π0.5 | PyTorch | Arc Pro B70 | 10 | 129.9 ms/call | 7.70 Hz | 100.0% | 5 |
-| LIBERO-Spatial | π0.5 | PyTorch | RTX PRO 4000 | 10 | 114.8 ms/call | 8.71 Hz | 100.0% | 5 |
-| LIBERO-Spatial | π0.5 | OpenVINO | Arc Pro B70 | 10 | 112.6 ms/call | 8.88 Hz | 100.0% | 5 |
-| LIBERO-Object  | π0.5 | PyTorch | Arc Pro B70 | 10 | 130.4 ms/call | 7.67 Hz | 100.0% | 5 |
-| LIBERO-Object  | π0.5 | PyTorch | RTX PRO 4000 | 10 | 115.1 ms/call | 8.69 Hz | 100.0% | 5 |
-| LIBERO-Object  | π0.5 | OpenVINO | Arc Pro B70 | 10 | 110.5 ms/call | 9.05 Hz | 98.0% | 5 |
-| LIBERO-Goal    | π0.5 | PyTorch | Arc Pro B70 | 10 | 130.2 ms/call | 7.68 Hz | 96.0% | 5 |
-| LIBERO-Goal    | π0.5 | PyTorch | RTX PRO 4000 | 10 | 114.9 ms/call | 8.70 Hz | 94.0% | 5 |
-| LIBERO-Goal    | π0.5 | OpenVINO | Arc Pro B70 | 10 | 111.6 ms/call | 8.96 Hz | 96.0% | 5 |
-| LIBERO-10      | π0.5 | PyTorch | Arc Pro B70 | 10 | 130.1 ms/call | 7.68 Hz | 90.0% | 5 |
-| LIBERO-10      | π0.5 | PyTorch | RTX PRO 4000 | 10 | 115.1 ms/call | 8.68 Hz | 94.0% | 5 |
-| LIBERO-10      | π0.5 | OpenVINO | Arc Pro B70 | 10 | 110.3 ms/call | 9.07 Hz | 90.0% | 5 |
+```bash
+cd <path-to-openpi>
+source .venv/bin/activate
+export LD_LIBRARY_PATH="$(pwd)/.venv/lib:$LD_LIBRARY_PATH"
+export MUJOCO_GL=osmesa
+export NUMBA_DISABLE_JIT=1
 
-> OpenVINO rows use FP32 IR exported from the PyTorch checkpoint and compiled on the Arc Pro B70 GPU plugin.
+# Single suite (5 trials per task, default 10 denoising steps)
+python run_libero_xpu.py \
+    --args.task-suite-name libero_spatial \
+    --args.num-trials-per-task 1
 
-## OpenVINO Export & Run
+# Faster inference — 5 denoising steps (~1.4x speedup, same accuracy)
+python run_libero_xpu.py \
+    --args.task-suite-name libero_spatial \
+    --args.num-trials-per-task 5 \
+    --args.num-steps 5
+
+# All suites
+ZE_AFFINITY_MASK=2 python run_libero_xpu.py \
+    --args.task-suite-name all \
+    --args.num-trials-per-task 5
+
+ZE_AFFINITY_MASK=2 python run_libero_xpu.py \
+    --args.task-suite-name all \
+    --args.num-trials-per-task 5 2>&1 | tee data/libero/run_all_$(date +%Y_%m_%d-%H_%M_%S).log
+
+# Custom web viewer port
+ZE_AFFINITY_MASK=1 python run_libero_xpu.py \
+     --args.ov-model-path profiler_output/libero_fp32/model.xml --args.task-suite-name libero_spatial \
+    --args.web-viewer-port 9001
+
+ZE_AFFINITY_MASK=1 python run_libero_xpu.py \
+     --args.ov-model-path profiler_output/libero_fp32_steps5/model.xml --args.task-suite-name libero_spatial \
+    --args.web-viewer-port 9001 --args.num-steps 5
+```
+
+### `--args.num-steps` — Denoising Steps
+
+Controls the number of **diffusion denoising steps** during inference. Fewer steps = faster inference. Default is **10**.
+
+| Steps | Inference Speed | Throughput | Impact |
+|---|---|---|---|
+| 10 (default) | ~111 ms/call | ~9.0 Hz | Full quality |
+| **5** | **~70 ms/call** | **~14 Hz** | **~1.6x faster, same accuracy** |
+
+```bash
+# 10 steps (default)
+python run_libero_xpu.py --args.task-suite-name libero_spatial
+
+# 5 steps (recommended — exceeds 100ms target)
+python run_libero_xpu.py --args.task-suite-name libero_spatial --args.num-steps 5
+```
+
+### Available Suites
+| Suite | Description |
+|-------|-------------|
+| `libero_spatial` | Spatial reasoning (10 tasks, max 220 steps) |
+| `libero_object` | Object manipulation (10 tasks, max 280 steps) |
+| `libero_goal` | Goal-directed (10 tasks, max 300 steps) |
+| `libero_10` | Long-horizon (10 tasks, max 520 steps) |
+| `libero_90` | 90-task suite (max 400 steps) |
+| `all` | Runs spatial + object + goal + 10 |
+
+---
+
+## Run — OpenVINO (export once, then run)
 
 The OpenVINO path has **two separate stages**: export (done once, takes ~10–30 min) and run (fast, done every time). The denoising step count is **baked into the exported model** — you must export separately for 10-step and 5-step models.
 
@@ -278,7 +360,7 @@ python scripts/convert_libero_openvino.py \
 
 ---
 
-### Run the benchmark with an OV model
+### Run with an OV model
 
 ```bash
 export LD_LIBRARY_PATH="$(pwd)/.venv/lib:$LD_LIBRARY_PATH"
@@ -309,75 +391,32 @@ ZE_AFFINITY_MASK=2 python run_libero_xpu.py \
 
 ---
 
-## Running the Benchmark
+## Results — Accuracy & Speed
 
-Set environment variables and run:
+π0.5 model, 5 trials/task, 10 denoising steps.
 
-```bash
-cd <path-to-openpi>
-source .venv/bin/activate
-export LD_LIBRARY_PATH="$(pwd)/.venv/lib:$LD_LIBRARY_PATH"
-export MUJOCO_GL=osmesa
-export NUMBA_DISABLE_JIT=1
+| Suite | Model | Framework | GPU | Denoise Steps | Inference Speed | Hz | Success Rate | Trials |
+|---|---|---|---|---|---|---|---|---|
+| LIBERO-Spatial | π0.5 | PyTorch | Arc Pro B70 | 10 | 129.9 ms/call | 7.70 Hz | 100.0% | 5 |
+| LIBERO-Spatial | π0.5 | PyTorch | RTX PRO 4000 | 10 | 114.8 ms/call | 8.71 Hz | 100.0% | 5 |
+| LIBERO-Spatial | π0.5 | OpenVINO | Arc Pro B70 | 10 | 112.6 ms/call | 8.88 Hz | 100.0% | 5 |
+| LIBERO-Object  | π0.5 | PyTorch | Arc Pro B70 | 10 | 130.4 ms/call | 7.67 Hz | 100.0% | 5 |
+| LIBERO-Object  | π0.5 | PyTorch | RTX PRO 4000 | 10 | 115.1 ms/call | 8.69 Hz | 100.0% | 5 |
+| LIBERO-Object  | π0.5 | OpenVINO | Arc Pro B70 | 10 | 110.5 ms/call | 9.05 Hz | 98.0% | 5 |
+| LIBERO-Goal    | π0.5 | PyTorch | Arc Pro B70 | 10 | 130.2 ms/call | 7.68 Hz | 96.0% | 5 |
+| LIBERO-Goal    | π0.5 | PyTorch | RTX PRO 4000 | 10 | 114.9 ms/call | 8.70 Hz | 94.0% | 5 |
+| LIBERO-Goal    | π0.5 | OpenVINO | Arc Pro B70 | 10 | 111.6 ms/call | 8.96 Hz | 96.0% | 5 |
+| LIBERO-10      | π0.5 | PyTorch | Arc Pro B70 | 10 | 130.1 ms/call | 7.68 Hz | 90.0% | 5 |
+| LIBERO-10      | π0.5 | PyTorch | RTX PRO 4000 | 10 | 115.1 ms/call | 8.68 Hz | 94.0% | 5 |
+| LIBERO-10      | π0.5 | OpenVINO | Arc Pro B70 | 10 | 110.3 ms/call | 9.07 Hz | 90.0% | 5 |
 
-# Single suite (5 trials per task, default 10 denoising steps)
-python run_libero_xpu.py \
-    --args.task-suite-name libero_spatial \
-    --args.num-trials-per-task 1
+> OpenVINO rows use FP32 IR exported from the PyTorch checkpoint and compiled on the Arc Pro B70 GPU plugin.
 
-# Faster inference — 5 denoising steps (~1.4x speedup, same accuracy)
-python run_libero_xpu.py \
-    --args.task-suite-name libero_spatial \
-    --args.num-trials-per-task 5 \
-    --args.num-steps 5
+---
 
-# All suites
-ZE_AFFINITY_MASK=2 python run_libero_xpu.py \
-    --args.task-suite-name all \
-    --args.num-trials-per-task 5
+## Reference
 
-ZE_AFFINITY_MASK=2 python run_libero_xpu.py \
-    --args.task-suite-name all \
-    --args.num-trials-per-task 5 2>&1 | tee data/libero/run_all_$(date +%Y_%m_%d-%H_%M_%S).log
-
-# Custom web viewer port
-ZE_AFFINITY_MASK=1 python run_libero_xpu.py \
-     --args.ov-model-path profiler_output/libero_fp32/model.xml --args.task-suite-name libero_spatial \
-    --args.web-viewer-port 9001
-
-ZE_AFFINITY_MASK=1 python run_libero_xpu.py \
-     --args.ov-model-path profiler_output/libero_fp32_steps5/model.xml --args.task-suite-name libero_spatial \
-    --args.web-viewer-port 9001 --args.num-steps 5
-```
-
-### `--args.num-steps` — Denoising Steps
-
-Controls the number of **diffusion denoising steps** during inference. Fewer steps = faster inference. Default is **10**.
-
-| Steps | Inference Speed | Throughput | Impact |
-|---|---|---|---|
-| 10 (default) | ~111 ms/call | ~9.0 Hz | Full quality |
-| **5** | **~70 ms/call** | **~14 Hz** | **~1.6x faster, same accuracy** |
-
-```bash
-# 10 steps (default)
-python run_libero_xpu.py --args.task-suite-name libero_spatial
-
-# 5 steps (recommended — exceeds 100ms target)
-python run_libero_xpu.py --args.task-suite-name libero_spatial --args.num-steps 5
-```
-
-### Available Suites
-| Suite | Description |
-|-------|-------------|
-| `libero_spatial` | Spatial reasoning (10 tasks, max 220 steps) |
-| `libero_object` | Object manipulation (10 tasks, max 280 steps) |
-| `libero_goal` | Goal-directed (10 tasks, max 300 steps) |
-| `libero_10` | Long-horizon (10 tasks, max 520 steps) |
-| `libero_90` | 90-task suite (max 400 steps) |
-| `all` | Runs spatial + object + goal + 10 |
-
-## Quick Setup (New Terminal)
+### Quick Setup (New Terminal)
 
 Add alias to `~/.bashrc` (already done):
 
@@ -405,7 +444,7 @@ openpi
 | `No module named 'easydict'` | Run `uv pip install easydict` |
 | `init_states path does not exist` | Run Step 5 to reset `~/.libero/config.yaml` to your clone |
 
-## Live Web Viewer
+### Live Web Viewer
 
 `web_viewer.py` streams the simulation live to your browser as an MJPEG feed while the benchmark runs. It shows:
 - Live agentview camera feed
@@ -458,7 +497,7 @@ Then port-forward and open `http://localhost:9000` to verify it's working.
 
 ---
 
-## Output Files
+### Output Files
 
 `run_libero_xpu.py` saves to `data/libero/videos/`:
 
@@ -469,7 +508,7 @@ Then port-forward and open `http://localhost:9000` to verify it's working.
 | `run_<suite>_<timestamp>.log` | Complete terminal output |
 | `combined_results_<timestamp>.json` | Combined results when using `all` |
 
-## Why the Environment Variables
+### Why the Environment Variables
 
 | Var | Value | Reason |
 |---|---|---|
