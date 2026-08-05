@@ -80,19 +80,33 @@ xpu device count: 2
 ### 4. Download and convert the π₀.₅ model to PyTorch
 
 The XPU backend requires a PyTorch checkpoint. The published π₀.₅-LIBERO checkpoint is JAX,
-so convert it first (one-time, ~10 GB download):
+so download and convert it (one-time, ~10 GB download).
 
+**Step 1 — download the JAX checkpoint** (no GCP credentials required):
+```bash
+uv run python -c "
+from openpi.shared.download import maybe_download
+path = maybe_download('gs://openpi-assets/checkpoints/pi05_libero')
+print('Downloaded to:', path)
+"
+```
+This caches the checkpoint to `~/.cache/openpi/openpi-assets/checkpoints/pi05_libero`.
+
+**Step 2 — convert to PyTorch:**
 ```bash
 uv run examples/convert_jax_model_to_pytorch.py \
-    --checkpoint-dir gs://openpi-assets/checkpoints/pi05_libero \
+    --checkpoint-dir ~/.cache/openpi/openpi-assets/checkpoints/pi05_libero \
     --config-name pi05_libero \
     --output-path checkpoints/pi05_libero_pytorch
 ```
 
-The converted checkpoint is saved to `checkpoints/pi05_libero_pytorch/`.
+**Step 3 — copy the norm stats** (the convert script only copies model weights):
+```bash
+cp -r ~/.cache/openpi/openpi-assets/checkpoints/pi05_libero/assets \
+    checkpoints/pi05_libero_pytorch/
+```
 
-If you already have the JAX checkpoint cached locally (e.g. in `~/.cache/openpi`), you can
-point `--checkpoint-dir` at the local path to skip the download.
+The converted checkpoint is saved to `checkpoints/pi05_libero_pytorch/`.
 
 ---
 
@@ -100,7 +114,7 @@ point `--checkpoint-dir` at the local path to skip the download.
 
 **Terminal 1 — start the policy server:**
 ```bash
-uv run scripts/serve_policy.py policy:checkpoint \
+uv run scripts/serve_policy.py --port 8000 policy:checkpoint \
     --policy.config pi05_libero \
     --policy.dir checkpoints/pi05_libero_pytorch
 ```
@@ -112,9 +126,13 @@ INFO:websockets.server:server listening on 0.0.0.0:8000
 ```
 before sending any requests.
 
+> **Note:** The first `infer` call triggers `torch.compile(mode='max-autotune')` and can take
+> several minutes. The server disables WebSocket keepalive pings so the client connection stays
+> open during compilation.
+
 **Terminal 2 — send LIBERO-shaped dummy observations:**
 ```bash
-uv run examples/simple_client/main.py --env LIBERO --num-steps 5
+uv run examples/simple_client/main.py --port 8000 --env LIBERO --num-steps 5
 ```
 
 Expected output (verified on B70):
@@ -137,7 +155,7 @@ git submodule update --init --recursive
 
 **Terminal 1 — policy server** (keep running from step 5, or restart):
 ```bash
-uv run scripts/serve_policy.py policy:checkpoint \
+uv run scripts/serve_policy.py --port 8000 policy:checkpoint \
     --policy.config pi05_libero \
     --policy.dir checkpoints/pi05_libero_pytorch
 ```
@@ -153,9 +171,16 @@ uv pip sync examples/libero/requirements.txt third_party/libero/requirements.txt
 uv pip install -e packages/openpi-client
 uv pip install -e third_party/libero
 export PYTHONPATH=$PYTHONPATH:$PWD/third_party/libero
+export LD_LIBRARY_PATH="$(pwd)/examples/libero/.venv/lib:$LD_LIBRARY_PATH"
+export MUJOCO_GL=osmesa
+export NUMBA_DISABLE_JIT=1
+
+# On kernels with READ_IMPLIES_EXEC hardening, clear the execstack flag from
+# the old PyTorch build to avoid "cannot enable executable stack" ImportError:
+patchelf --clear-execstack examples/libero/.venv/lib/python3.8/site-packages/torch/lib/libtorch_cpu.so
 
 # Run libero_spatial (default suite: 10 tasks × 50 trials)
-python examples/libero/main.py
+python examples/libero/main.py --args.port 8000
 ```
 
 To run a different task suite:
@@ -173,22 +198,19 @@ Expected results (π₀.₅ checkpoint at 30k steps):
 
 ---
 
-### Device override
+### Selecting a specific GPU
 
-To explicitly target a specific XPU device (e.g. when two are present):
+To target a specific XPU device (e.g. when two are present), set `ZE_AFFINITY_MASK` before
+starting the server:
 
-```python
-from openpi.training import config as _config
-from openpi.policies import policy_config
-
-config = _config.get_config("pi05_libero")
-policy = policy_config.create_trained_policy(
-    config,
-    "checkpoints/pi05_libero_pytorch",
-    pytorch_device="xpu:0",   # or "xpu:1"
-)
-actions = policy.infer(observation)["actions"]
+```bash
+export ZE_AFFINITY_MASK=0   # use device 0
+uv run scripts/serve_policy.py --port 8000 policy:checkpoint \
+    --policy.config pi05_libero \
+    --policy.dir checkpoints/pi05_libero_pytorch
 ```
+
+Set `ZE_AFFINITY_MASK=1` to use device 1 instead.
 
 ---
 
