@@ -3,7 +3,7 @@ name = "openpi"
 version = "0.1.0"
 description = "Physical Intelligence open source repo"
 readme = "README.md"
-requires-python = "==3.11.*"
+requires-python = ">=3.11"
 license = { file = "LICENSE" }
 dependencies = [
     "augmax>=0.3.4",
@@ -41,15 +41,6 @@ dependencies = [
 ]
 
 
-[project.optional-dependencies]
-xpu = [
-    # Intel XPU inference support (replaces the default CUDA/CPU torch wheels).
-    # Requires Intel oneAPI Base Toolkit: https://www.intel.com/content/www/us/en/developer/tools/oneapi/base-toolkit.html
-    "torch==2.11.0+xpu",
-    "torchvision==0.26.0+xpu",
-    "triton-xpu==3.7.0",
-]
-
 [project.urls]
 Repository = "https://github.com/Physical-Intelligence/openpi"
 
@@ -70,6 +61,14 @@ rlds = [
     "tensorflow-cpu==2.15.0",
     "tensorflow-datasets==4.9.9",
 ]
+xpu = [
+    # Intel XPU inference support (replaces the default CUDA/CPU torch wheels).
+    # Requires Intel oneAPI Base Toolkit: https://www.intel.com/content/www/us/en/developer/tools/oneapi/base-toolkit.html
+    "torch==2.11.0+xpu",
+    "torchvision==0.26.0+xpu",
+    "triton-xpu==3.7.0",
+]
+
 [tool.uv]
 override-dependencies = ["ml-dtypes==0.4.1", "tensorstore==0.1.74"]
 
@@ -83,13 +82,13 @@ openpi-client = { workspace = true }
 lerobot = { git = "https://github.com/huggingface/lerobot", rev = "0cf864870cf29f4738d3ade893e6fd13fbd7cdb5" }
 dlimp = { git = "https://github.com/kvablack/dlimp", rev = "ad72ce3a9b414db2185bc0b38461d4101a65477a" }
 torch = [
-    { index = "pytorch-xpu", marker = "extra == 'xpu'" },
+    { index = "pytorch-xpu", group = "xpu" },
 ]
 torchvision = [
-    { index = "pytorch-xpu", marker = "extra == 'xpu'" },
+    { index = "pytorch-xpu", group = "xpu" },
 ]
 triton-xpu = [
-    { index = "pytorch-xpu", marker = "extra == 'xpu'" },
+    { index = "pytorch-xpu", group = "xpu" },
 ]
 
 [tool.uv.workspace]
