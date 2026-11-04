@@ -62,11 +62,13 @@ rlds = [
     "tensorflow-datasets==4.9.9",
 ]
 xpu = [
-    # Intel XPU inference support (replaces the default CUDA/CPU torch wheels).
-    # Requires Intel oneAPI Base Toolkit: https://www.intel.com/content/www/us/en/developer/tools/oneapi/base-toolkit.html
-    "torch==2.11.0+xpu",
-    "torchvision==0.26.0+xpu",
-    "triton-xpu==3.7.0",
+    # Intel XPU inference support (replaces the default CUDA/CPU torch wheels). Install with
+    # `uv sync --group xpu`. The wheels bundle the SYCL runtime; the host needs the Intel GPU
+    # driver (compute runtime) only. torch 2.14 is the first XPU release whose SDPA can be
+    # captured in a device graph (see docs/xpu.md).
+    "torch==2.14.1+xpu",
+    "torchvision==0.29.1+xpu",
+    "triton-xpu==3.8.0",
 ]
 
 [tool.uv]
