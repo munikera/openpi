@@ -33,6 +33,13 @@ class Pi0Config(_model.BaseModelConfig):
     discrete_state_input: bool = None  # type: ignore
 
     pytorch_compile_mode: str | None = "max-autotune"
+    # PyTorch only: replay the action sampler from a captured device graph (CUDA or Intel XPU).
+    #   None      : no graph (default)
+    #   "denoise" : capture the flow-matching denoise loop; the vision/language prefix runs as usual
+    #   "full"    : capture the whole sampler, prefix included (needs torch >= 2.14 on XPU, where
+    #               SDPA becomes capturable)
+    # The OPENPI_PYTORCH_DEVICE_GRAPH environment variable ("none", "denoise", "full") overrides it.
+    pytorch_device_graph: str | None = None
 
     def __post_init__(self):
         if self.max_token_len is None:
@@ -46,6 +53,8 @@ class Pi0Config(_model.BaseModelConfig):
                 "max-autotune",
                 "max-autotune-no-cudagraphs",
             ]
+        if self.pytorch_device_graph is not None:
+            assert self.pytorch_device_graph in ["denoise", "full"], self.pytorch_device_graph
 
     @property
     @override

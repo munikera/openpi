@@ -1,14 +1,46 @@
 import logging
 import math
+import os
 
+import jax
 import torch
 from torch import Tensor
 from torch import nn
 import torch.nn.functional as F  # noqa: N812
+from transformers.cache_utils import DynamicCache
 
 import openpi.models.gemma as _gemma
+from openpi.models_pytorch import device_graph as _device_graph
 from openpi.models_pytorch.gemma_pytorch import PaliGemmaWithExpertModel
 import openpi.models_pytorch.preprocessing_pytorch as _preprocessing
+
+
+def make_ar_mask(values: list[int], dtype: torch.dtype, device: torch.device) -> Tensor:
+    """A 1-D tensor holding `values` (each 0 or 1), built on `device` without a host copy.
+
+    `torch.tensor(values, device=...)` copies from host memory on every call, which a
+    captured device graph cannot contain. The masks here are short runs of 0s and 1s,
+    so filling the runs of 1s in a zero tensor gives the same values with device ops only.
+    """
+    out = torch.zeros(len(values), dtype=dtype, device=device)
+    start = None
+    for i, v in enumerate([*values, 0]):
+        if v and start is None:
+            start = i
+        elif not v and start is not None:
+            out[start:i] = 1
+            start = None
+    return out
+
+
+def _resolve_device_graph_mode(config) -> str | None:
+    mode = getattr(config, "pytorch_device_graph", None)
+    env = os.environ.get("OPENPI_PYTORCH_DEVICE_GRAPH")
+    if env is not None:
+        mode = None if env.strip().lower() in ("", "0", "none", "off") else env.strip().lower()
+    if mode is not None and mode not in _device_graph.GRAPH_MODES:
+        raise ValueError(f"pytorch device graph mode must be one of {_device_graph.GRAPH_MODES} or none, got {mode!r}")
+    return mode
 
 
 def get_safe_dtype(target_dtype, device_type):
@@ -109,8 +141,31 @@ class PI0Pytorch(nn.Module):
             self.action_time_mlp_out = nn.Linear(action_expert_config.width, action_expert_config.width)
 
         torch.set_float32_matmul_precision("high")
-        if config.pytorch_compile_mode is not None:
-            self.sample_actions = torch.compile(self.sample_actions, mode=config.pytorch_compile_mode)
+        self.device_graph_mode = _resolve_device_graph_mode(config)
+        self._prefix_fn = self._embed_prefix_kv
+        self._denoise_fn = self._denoise_loop
+        self._full_fn = self._sample_from_observation
+        if self.device_graph_mode is None:
+            if config.pytorch_compile_mode is not None:
+                self.sample_actions = torch.compile(self.sample_actions, mode=config.pytorch_compile_mode)
+        else:
+            self._graph_runner = _device_graph.DeviceGraphRunner(f"pi0 {self.device_graph_mode}")
+            if config.pytorch_compile_mode is not None:
+                # The graph is captured here, so inductor must not capture its own CUDA graphs
+                # inside it ("max-autotune" and "reduce-overhead" would).
+                mode = {"max-autotune": "max-autotune-no-cudagraphs", "reduce-overhead": "default"}.get(
+                    config.pytorch_compile_mode, config.pytorch_compile_mode
+                )
+                if self.device_graph_mode == "full":
+                    # One compiled region for the whole captured body, so inductor can fuse
+                    # across the prefix/denoise boundary.
+                    self._full_fn = torch.compile(self._sample_from_observation, mode=mode)
+                else:
+                    self._prefix_fn = torch.compile(self._embed_prefix_kv, mode=mode)
+                    self._denoise_fn = torch.compile(self._denoise_loop, mode=mode)
+            logging.info(
+                "PI0Pytorch: device graph mode %r, compile mode %r", self.device_graph_mode, config.pytorch_compile_mode
+            )
 
         # Initialize gradient checkpointing flag
         self.gradient_checkpointing_enabled = False
@@ -227,7 +282,7 @@ class PI0Pytorch(nn.Module):
 
         embs = torch.cat(embs, dim=1)
         pad_masks = torch.cat(pad_masks, dim=1)
-        att_masks = torch.tensor(att_masks, dtype=torch.bool, device=pad_masks.device)
+        att_masks = make_ar_mask(att_masks, dtype=torch.bool, device=pad_masks.device)
 
         # Get batch size from the first dimension of the concatenated tensors
         bsize = pad_masks.shape[0]
@@ -309,7 +364,7 @@ class PI0Pytorch(nn.Module):
 
         embs = torch.cat(embs, dim=1)
         pad_masks = torch.cat(pad_masks, dim=1)
-        att_masks = torch.tensor(att_masks, dtype=embs.dtype, device=embs.device)
+        att_masks = make_ar_mask(att_masks, dtype=embs.dtype, device=embs.device)
         att_masks = att_masks[None, :].expand(bsize, len(att_masks))
 
         return embs, pad_masks, att_masks, adarms_cond
@@ -381,8 +436,46 @@ class PI0Pytorch(nn.Module):
             actions_shape = (bsize, self.config.action_horizon, self.config.action_dim)
             noise = self.sample_noise(actions_shape, device)
 
-        images, img_masks, lang_tokens, lang_masks, state = self._preprocess_observation(observation, train=False)
+        mode = self.device_graph_mode
+        if mode is not None and not _device_graph.device_graph_supported(noise.device):
+            mode = None
 
+        if mode == "full":
+            # Everything from the raw observation to the actions, preprocessing included, in
+            # one graph. The observation's tensors become the graph's static inputs.
+            # Observation is a flax struct dataclass, i.e. a JAX pytree.
+            leaves, treedef = jax.tree_util.tree_flatten(observation)
+
+            def full(noise, *obs_leaves):
+                obs = jax.tree_util.tree_unflatten(treedef, obs_leaves)
+                return self._full_fn(obs, noise, num_steps)
+
+            return self._graph_runner(full, [noise, *leaves], extra=("full", num_steps, treedef))
+
+        images, img_masks, lang_tokens, lang_masks, state = self._preprocess_observation(observation, train=False)
+        prefix_pad_masks, kv = self._prefix_fn(images, img_masks, lang_tokens, lang_masks)
+        if mode == "denoise":
+            # The denoise loop runs the small action expert num_steps times over a fixed
+            # prefix KV cache: launch-bound, so it gains most from a graph. The cache
+            # tensors are copied into static buffers like any other input.
+            flat_kv = [t for kv_pair in kv for t in kv_pair]
+
+            def denoise(state, prefix_pad_masks, noise, *flat):
+                pairs = tuple((flat[i], flat[i + 1]) for i in range(0, len(flat), 2))
+                return self._denoise_fn(state, prefix_pad_masks, pairs, noise, num_steps)
+
+            return self._graph_runner(denoise, [state, prefix_pad_masks, noise, *flat_kv], extra=("denoise", num_steps))
+
+        return self._denoise_fn(state, prefix_pad_masks, kv, noise, num_steps)
+
+    def _sample_from_observation(self, observation, noise, num_steps):
+        """Preprocessing, prefix and denoise loop: the body captured by the "full" graph mode."""
+        images, img_masks, lang_tokens, lang_masks, state = self._preprocess_observation(observation, train=False)
+        prefix_pad_masks, kv = self._embed_prefix_kv(images, img_masks, lang_tokens, lang_masks)
+        return self._denoise_loop(state, prefix_pad_masks, kv, noise, num_steps)
+
+    def _embed_prefix_kv(self, images, img_masks, lang_tokens, lang_masks):
+        """Run the vision/language prefix once; return its pad mask and per-layer (key, value) cache."""
         prefix_embs, prefix_pad_masks, prefix_att_masks = self.embed_prefix(images, img_masks, lang_tokens, lang_masks)
         prefix_att_2d_masks = make_att_2d_masks(prefix_pad_masks, prefix_att_masks)
         prefix_position_ids = torch.cumsum(prefix_pad_masks, dim=1) - 1
@@ -398,14 +491,22 @@ class PI0Pytorch(nn.Module):
             inputs_embeds=[prefix_embs, None],
             use_cache=True,
         )
+        kv = tuple((past_key_values[i][0], past_key_values[i][1]) for i in range(len(past_key_values)))
+        return prefix_pad_masks, kv
 
+    def _denoise_loop(self, state, prefix_pad_masks, kv, noise, num_steps):
+        """Euler integration from t=1 to t=0 in num_steps steps over a fixed prefix cache.
+
+        The step times are Python floats, so the loop never reads a device value back to
+        the host: the same steps as testing a device-side time each iteration, without a
+        host sync per step, and capturable in a device graph.
+        """
+        past_key_values = DynamicCache.from_legacy_cache(kv)
+        bsize = state.shape[0]
         dt = -1.0 / num_steps
-        dt = torch.tensor(dt, dtype=torch.float32, device=device)
-
         x_t = noise
-        time = torch.tensor(1.0, dtype=torch.float32, device=device)
-        while time >= -dt / 2:
-            expanded_time = time.expand(bsize)
+        for step in range(num_steps):
+            expanded_time = torch.full((bsize,), 1.0 + step * dt, dtype=torch.float32, device=noise.device)
             v_t = self.denoise_step(
                 state,
                 prefix_pad_masks,
@@ -416,7 +517,6 @@ class PI0Pytorch(nn.Module):
 
             # Euler step - use new tensor assignment instead of in-place operation
             x_t = x_t + dt * v_t
-            time += dt
         return x_t
 
     def denoise_step(
