@@ -93,11 +93,13 @@ class Policy(BasePolicy):
             "state": inputs["state"],
             "actions": self._sample_actions(sample_rng_or_pytorch_device, observation, **sample_kwargs),
         }
-        model_time = time.monotonic() - start_time
         if self._is_pytorch_model:
             outputs = jax.tree.map(lambda x: np.asarray(x[0, ...].detach().cpu()), outputs)
         else:
             outputs = jax.tree.map(lambda x: np.asarray(x[0, ...]), outputs)
+        # Measured after the copy to host: GPU work is asynchronous (graph replay especially),
+        # so stopping the clock before it would time the kernel launches, not the model.
+        model_time = time.monotonic() - start_time
 
         outputs = self._output_transform(outputs)
         outputs["policy_timing"] = {

@@ -30,11 +30,14 @@ class WebsocketPolicyServer:
         self._port = port
         self._metadata = metadata or {}
         logging.getLogger("websockets.server").setLevel(logging.INFO)
+        # One inference at a time, as before: the policy is not thread-safe.
+        self._infer_lock: asyncio.Lock | None = None
 
     def serve_forever(self) -> None:
         asyncio.run(self.run())
 
     async def run(self):
+        self._infer_lock = asyncio.Lock()
         async with _server.serve(
             self._handler,
             self._host,
@@ -58,7 +61,11 @@ class WebsocketPolicyServer:
                 obs = msgpack_numpy.unpackb(await websocket.recv())
 
                 infer_time = time.monotonic()
-                action = self._policy.infer(obs)
+                # Run inference off the event loop. The first call can spend minutes in
+                # torch.compile; a blocked loop cannot answer the client's keepalive pings,
+                # so the client drops the connection and new clients cannot handshake.
+                async with self._infer_lock:
+                    action = await asyncio.to_thread(self._policy.infer, obs)
                 infer_time = time.monotonic() - infer_time
 
                 action["server_timing"] = {
