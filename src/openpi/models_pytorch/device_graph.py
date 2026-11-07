@@ -10,6 +10,7 @@ is CUDA-only, so it has to be done explicitly, as here.
 
 from __future__ import annotations
 
+import collections
 from collections.abc import Callable, Sequence
 import dataclasses
 import logging
@@ -54,29 +55,40 @@ class _Captured:
 class DeviceGraphRunner:
     """Runs `fn(*tensors)` from a captured device graph.
 
-    The graph is captured on the first call and recaptured whenever the input
-    signature (shapes, dtypes, device, and `extra`) changes. Inputs are copied into
-    the graph's static buffers before every replay, and the output is cloned so a
-    later replay cannot overwrite a result the caller still holds.
+    One graph is captured per input signature (shapes, dtypes, device, and `extra`) and
+    kept, up to `max_graphs` (least recently used first out), so callers that alternate
+    signatures, like a server batching a varying number of requests, replay instead of
+    recapturing on every call. The graphs share one memory pool: they never run at the
+    same time, and each output is cloned right after its replay, so one graph's scratch
+    memory may be reused by the next.
+
+    Inputs are copied into the graph's static buffers before every replay, and the output
+    is cloned so a later replay cannot overwrite a result the caller still holds.
 
     `fn` must not synchronise with the host or create tensors from host data while
-    it runs; anything it allocates must have a fixed shape.
+    it runs; anything it allocates must have a fixed shape. Calls must not overlap.
     """
 
-    def __init__(self, name: str, warmup_iters: int = 2):
+    def __init__(self, name: str, warmup_iters: int = 2, max_graphs: int = 16):
         self.name = name
         self.warmup_iters = warmup_iters
-        self._captured: _Captured | None = None
+        self.max_graphs = max_graphs
+        self._captured: collections.OrderedDict[tuple, _Captured] = collections.OrderedDict()
+        self._pool = None
 
     def reset(self) -> None:
-        self._captured = None
+        self._captured.clear()
+        self._pool = None
 
     def __call__(self, fn: Callable[..., torch.Tensor], tensors: Sequence[torch.Tensor], extra: tuple = ()):
         key = _signature(tensors, extra)
-        cap = self._captured
-        if cap is None or cap.key != key:
-            cap = self._captured = self._capture(fn, tensors, key)
+        cap = self._captured.get(key)
+        if cap is None:
+            while len(self._captured) >= self.max_graphs:
+                self._captured.popitem(last=False)
+            cap = self._captured[key] = self._capture(fn, tensors, key)
         else:
+            self._captured.move_to_end(key)
             for dst, src in zip(cap.static_inputs, tensors, strict=True):
                 dst.copy_(src)
         cap.graph.replay()
@@ -97,8 +109,11 @@ class DeviceGraphRunner:
         backend.current_stream(device).wait_stream(stream)
         backend.synchronize(device)
         graph = _graph_class(device)()
-        with backend.graph(graph):
+        with backend.graph(graph, pool=self._pool):
             output = fn(*static_inputs)
         backend.synchronize(device)
-        logger.info("Captured %s device graph on %s in %.1f s", self.name, device, time.perf_counter() - t0)
+        if self._pool is None:
+            self._pool = graph.pool()
+        logger.info("Captured %s device graph on %s in %.1f s (%d kept)", self.name, device,
+                    time.perf_counter() - t0, len(self._captured) + 1)
         return _Captured(key=key, graph=graph, static_inputs=static_inputs, output=output)

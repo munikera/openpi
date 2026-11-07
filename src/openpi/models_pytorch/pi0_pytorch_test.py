@@ -72,13 +72,35 @@ def test_device_graph_runner_replays_with_new_inputs():
         x = torch.randn(8, 64, device=dev)
         y = torch.randn(8, 64, device=dev)
         torch.testing.assert_close(runner(fn, [x, y]), fn(x, y))
-    first = runner._captured  # noqa: SLF001
+    assert len(runner._captured) == 1  # noqa: SLF001
 
-    # A new shape recaptures; the same shape reuses the graph.
+    # A new shape captures a second graph; the same shape reuses the graph.
     x = torch.randn(4, 64, device=dev)
     y = torch.randn(4, 64, device=dev)
     torch.testing.assert_close(runner(fn, [x, y]), fn(x, y))
-    assert runner._captured is not first  # noqa: SLF001
+    assert len(runner._captured) == 2  # noqa: SLF001
+
+
+@pytest.mark.skipif(_graph_device() is None, reason="needs a CUDA or XPU device")
+def test_device_graph_runner_alternating_shapes_replay_without_recapture():
+    """A batching server alternates batch sizes; each size keeps its graph and stays correct."""
+    dev = _graph_device()
+    w = torch.randn(64, 64, device=dev)
+
+    def fn(x):
+        return torch.tanh(x @ w) * 3
+
+    runner = device_graph.DeviceGraphRunner("test", max_graphs=3)
+    graphs = {}
+    for step in range(12):
+        bs = (1, 2, 3)[step % 3]
+        x = torch.randn(bs, 64, device=dev)
+        torch.testing.assert_close(runner(fn, [x]), fn(x))
+        graph = runner._captured[next(k for k in runner._captured if k[0][0] == (bs, 64))].graph  # noqa: SLF001
+        assert graphs.setdefault(bs, graph) is graph
+    # Past max_graphs the least recently used graph is dropped.
+    runner(fn, [torch.randn(4, 64, device=dev)])
+    assert sorted(k[0][0][0] for k in runner._captured) == [2, 3, 4]  # noqa: SLF001
 
 
 @pytest.mark.skipif(_graph_device() is None, reason="needs a CUDA or XPU device")
