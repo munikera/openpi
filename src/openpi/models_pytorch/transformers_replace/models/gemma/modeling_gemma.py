@@ -81,11 +81,16 @@ class GemmaRMSNorm(nn.Module):
             return normed_inputs.to(dtype), None  # return in original dtype with None gate
         
         # adaptive RMSNorm (if cond is provided and dense layer exists)
-        if cond.shape[-1] != self.cond_dim:
-            raise ValueError(f"Expected cond dimension {self.cond_dim}, got {cond.shape[-1]}")
-        
-        #self.dense.to(dtype=torch.bfloat16).to(dtype=torch.float32)
-        modulation = self.dense(cond)
+        if isinstance(cond, dict):
+            # Precomputed modulations, keyed by this norm's module name (see
+            # PI0Pytorch._adarms_table): the same value as self.dense(cond).
+            modulation = cond[self._adarms_key]
+        else:
+            if cond.shape[-1] != self.cond_dim:
+                raise ValueError(f"Expected cond dimension {self.cond_dim}, got {cond.shape[-1]}")
+
+            #self.dense.to(dtype=torch.bfloat16).to(dtype=torch.float32)
+            modulation = self.dense(cond)
         # Reshape modulation to broadcast properly: [batch, 1, features] for [batch, seq, features]
         if len(x.shape) == 3:  # [batch, seq, features]
             modulation = modulation.unsqueeze(1)

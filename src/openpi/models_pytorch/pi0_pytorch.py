@@ -290,8 +290,20 @@ class PI0Pytorch(nn.Module):
 
         return embs, pad_masks, att_masks
 
-    def embed_suffix(self, state, noisy_actions, timestep):
-        """Embed state, noisy_actions, timestep to prepare for Expert Gemma processing."""
+    def embed_suffix(self, state, noisy_actions, timestep, adarms_cond=None):
+        """Embed state, noisy_actions, timestep to prepare for Expert Gemma processing.
+
+        For pi05, `adarms_cond` may be a precomputed table row from `_adarms_table`; the
+        timestep then feeds nothing else, so its embedding and time MLP are skipped.
+        """
+        if self.pi05 and adarms_cond is not None:
+            action_emb = self._apply_checkpoint(self.action_in_proj, noisy_actions)
+            bsize, action_time_dim = action_emb.shape[:2]
+            pad_masks = torch.ones(bsize, action_time_dim, dtype=torch.bool, device=action_emb.device)
+            att_masks = make_ar_mask([1] + ([0] * (self.config.action_horizon - 1)), dtype=action_emb.dtype,
+                                     device=action_emb.device)
+            return action_emb, pad_masks, att_masks[None, :].expand(bsize, action_time_dim), adarms_cond
+
         embs = []
         pad_masks = []
         att_masks = []
@@ -494,6 +506,47 @@ class PI0Pytorch(nn.Module):
         kv = tuple((past_key_values[i][0], past_key_values[i][1]) for i in range(len(past_key_values)))
         return prefix_pad_masks, kv
 
+    @torch.compiler.disable
+    def _adarms_table(self, num_steps: int, device: torch.device):
+        """Per-step adaRMS modulations for the action expert, computed once per step count.
+
+        In pi05 the flow-matching time reaches the expert only through adaRMS: a sinusoidal
+        embedding, the time MLP, and one `dense` projection per norm (37 of them, float32,
+        12.6 MB each). The step times are fixed by num_steps, so every modulation is a
+        constant of the weights; recomputing them each step re-reads ~466 MB to process one
+        row. This computes all steps in one batched pass instead, with the same operations,
+        and caches the result until the weights change.
+
+        Returns None (use the regular path) for pi0, during training, or with grad enabled.
+        Runs eagerly, outside torch.compile and outside any captured device graph.
+        """
+        if not self.pi05 or self.training or torch.is_grad_enabled():
+            return None
+        expert = self.paligemma_with_expert.gemma_expert
+        norms = getattr(self, "_adarms_norms", None)
+        if norms is None:
+            norms = [(name, mod) for name, mod in expert.named_modules()
+                     if getattr(mod, "dense", None) is not None and hasattr(mod, "cond_dim")]
+            for name, mod in norms:
+                mod._adarms_key = name
+            self._adarms_norms = norms
+        version = (self.time_mlp_in.weight._version, self.time_mlp_out.weight._version,
+                   *(mod.dense.weight._version for _, mod in norms))
+        key = (num_steps, str(device), version)
+        cache = getattr(self, "_adarms_cache", None)
+        if cache is not None and cache[0] == key:
+            return cache[1]
+        dt = -1.0 / num_steps
+        times = torch.tensor([1.0 + s * dt for s in range(num_steps)], dtype=torch.float32, device=device)
+        time_emb = create_sinusoidal_pos_embedding(
+            times, self.action_in_proj.out_features, min_period=4e-3, max_period=4.0, device=device
+        ).type(dtype=times.dtype)
+        cond = F.silu(self.time_mlp_out(F.silu(self.time_mlp_in(time_emb))))
+        mods = {name: mod.dense(cond) for name, mod in norms}
+        table = [{name: m[s : s + 1] for name, m in mods.items()} for s in range(num_steps)]
+        self._adarms_cache = (key, table)
+        return table
+
     def _denoise_loop(self, state, prefix_pad_masks, kv, noise, num_steps):
         """Euler integration from t=1 to t=0 in num_steps steps over a fixed prefix cache.
 
@@ -505,6 +558,7 @@ class PI0Pytorch(nn.Module):
         bsize = state.shape[0]
         dt = -1.0 / num_steps
         x_t = noise
+        table = self._adarms_table(num_steps, noise.device)
         for step in range(num_steps):
             expanded_time = torch.full((bsize,), 1.0 + step * dt, dtype=torch.float32, device=noise.device)
             v_t = self.denoise_step(
@@ -513,6 +567,7 @@ class PI0Pytorch(nn.Module):
                 past_key_values,
                 x_t,
                 expanded_time,
+                adarms_cond=None if table is None else table[step],
             )
 
             # Euler step - use new tensor assignment instead of in-place operation
@@ -526,9 +581,12 @@ class PI0Pytorch(nn.Module):
         past_key_values,
         x_t,
         timestep,
+        adarms_cond=None,
     ):
         """Apply one denoising step of the noise `x_t` at a given timestep."""
-        suffix_embs, suffix_pad_masks, suffix_att_masks, adarms_cond = self.embed_suffix(state, x_t, timestep)
+        suffix_embs, suffix_pad_masks, suffix_att_masks, adarms_cond = self.embed_suffix(
+            state, x_t, timestep, adarms_cond=adarms_cond
+        )
 
         suffix_len = suffix_pad_masks.shape[1]
         batch_size = prefix_pad_masks.shape[0]
