@@ -2,9 +2,13 @@ import dataclasses
 import enum
 import logging
 import socket
+import time
 
 import tyro
 
+from openpi.policies import aloha_policy
+from openpi.policies import droid_policy
+from openpi.policies import libero_policy
 from openpi.policies import policy as _policy
 from openpi.policies import policy_config as _policy_config
 from openpi.serving import websocket_policy_server
@@ -51,6 +55,10 @@ class Args:
     # Record the policy's behavior for debugging.
     record: bool = False
 
+    # Batch requests from different clients (robots) into one model call, up to this many.
+    # 1 serves one request at a time. Every batch size up to this is warmed up at startup.
+    max_batch: int = 1
+
     # Specifies how to load the policy. If not provided, the default policy for the environment will be used.
     policy: Checkpoint | Default = dataclasses.field(default_factory=Default)
 
@@ -96,9 +104,31 @@ def create_policy(args: Args) -> _policy.Policy:
             return create_default_policy(args.env, default_prompt=args.default_prompt)
 
 
+_EXAMPLES = {"aloha": aloha_policy.make_aloha_example, "droid": droid_policy.make_droid_example,
+             "libero": libero_policy.make_libero_example}
+
+
+def warm_up_batches(policy: _policy.Policy, args: Args) -> None:
+    """Run every batch size once, so compilation and device-graph capture happen before robots connect."""
+    name = args.policy.config if isinstance(args.policy, Checkpoint) else args.env.value
+    make_example = next((f for key, f in _EXAMPLES.items() if key in name), None)
+    if make_example is None:
+        logging.warning("No example observation for %s; batch sizes compile on first use", name)
+        return
+    example = make_example()
+    for size in range(1, args.max_batch + 1):
+        start = time.monotonic()
+        policy.infer_batch([example] * size)
+        logging.info("Warmed up batch size %d in %.1f s", size, time.monotonic() - start)
+
+
 def main(args: Args) -> None:
     policy = create_policy(args)
     policy_metadata = policy.metadata
+    if args.max_batch > 1:
+        if args.record:
+            raise ValueError("--record records one request at a time; use it with --max-batch 1")
+        warm_up_batches(policy, args)
 
     # Record the policy's behavior.
     if args.record:
@@ -113,6 +143,7 @@ def main(args: Args) -> None:
         host="0.0.0.0",
         port=args.port,
         metadata=policy_metadata,
+        max_batch=args.max_batch,
     )
     server.serve_forever()
 

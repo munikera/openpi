@@ -107,6 +107,44 @@ class Policy(BasePolicy):
         }
         return outputs
 
+    def infer_batch(self, observations: Sequence[dict]) -> list[dict]:
+        """`infer` for several observations in one model call; returns one result per observation.
+
+        Each observation goes through the same input and output transforms as in `infer`;
+        only the model runs once, on the stacked batch. Serving many robots this way costs
+        less GPU time per request than one call each, because the vision-language prefix
+        is compute-bound. With a PyTorch device graph mode, each batch size is captured
+        once and replayed after that.
+        """
+        inputs = [self._input_transform(jax.tree.map(lambda x: x, obs)) for obs in observations]
+        if self._is_pytorch_model:
+            batch = jax.tree.map(
+                lambda *xs: torch.from_numpy(np.stack([np.asarray(x) for x in xs])).to(self._pytorch_device), *inputs
+            )
+            sample_rng_or_pytorch_device = self._pytorch_device
+        else:
+            batch = jax.tree.map(lambda *xs: jnp.stack([jnp.asarray(x) for x in xs]), *inputs)
+            self._rng, sample_rng_or_pytorch_device = jax.random.split(self._rng)
+
+        observation = _model.Observation.from_dict(batch)
+        start_time = time.monotonic()
+        outputs = {
+            "state": batch["state"],
+            "actions": self._sample_actions(sample_rng_or_pytorch_device, observation, **self._sample_kwargs),
+        }
+        if self._is_pytorch_model:
+            outputs = jax.tree.map(lambda x: np.asarray(x.detach().cpu()), outputs)
+        else:
+            outputs = jax.tree.map(np.asarray, outputs)
+        model_time = time.monotonic() - start_time  # after the copy to host, as in `infer`
+
+        results = []
+        for i in range(len(inputs)):
+            result = self._output_transform({k: v[i] for k, v in outputs.items()})
+            result["policy_timing"] = {"infer_ms": model_time * 1000, "batch_size": len(inputs)}
+            results.append(result)
+        return results
+
     @property
     def metadata(self) -> dict[str, Any]:
         return self._metadata
