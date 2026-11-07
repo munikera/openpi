@@ -61,9 +61,15 @@ rlds = [
     "tensorflow-cpu==2.15.0",
     "tensorflow-datasets==4.9.9",
 ]
+# The default torch build (CUDA wheels from PyPI), as before the XPU group was added. It is a
+# default group so a plain `uv sync` keeps installing it; it conflicts with `xpu`, which lets the
+# lock hold both resolutions instead of forcing the XPU wheel on every user.
+cuda = [
+    "torch==2.7.1",
+]
 xpu = [
     # Intel XPU inference support (replaces the default CUDA/CPU torch wheels). Install with
-    # `uv sync --group xpu`. The wheels bundle the SYCL runtime; the host needs the Intel GPU
+    # `uv sync --group xpu --no-group cuda`. The wheels bundle the SYCL runtime; the host needs the Intel GPU
     # driver (compute runtime) only. torch 2.14 is the first XPU release whose SDPA can be
     # captured in a device graph (see docs/xpu.md).
     "torch==2.14.1+xpu",
@@ -73,6 +79,8 @@ xpu = [
 
 [tool.uv]
 override-dependencies = ["ml-dtypes==0.4.1", "tensorstore==0.1.74"]
+default-groups = ["dev", "cuda"]
+conflicts = [[{ group = "cuda" }, { group = "xpu" }]]
 
 [[tool.uv.index]]
 name = "pytorch-xpu"
